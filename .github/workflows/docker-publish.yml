@@ -1,0 +1,221 @@
+name: Docker
+
+on:
+  # Rebuild nightly so PHP and distro patches reach the pipeline without anyone
+  # asking. Dependabot below catches what changes a file; this catches what does
+  # not - which is how the previous CI image sat ten months behind on PHP.
+  schedule:
+    - cron: '15 5 * * *'
+  push:
+    branches: [ "8.5" ]
+  pull_request:
+    branches: [ "8.5" ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  DOCKER_BUILD_RECORD_UPLOAD: 'false'
+
+jobs:
+  base:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+
+      # Export one exact base for both matrix jobs, including on fork PRs that
+      # cannot publish to GHCR. Keep the existing shared-toolchain cache.
+      - name: Build shared base
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: base
+          platforms: linux/amd64
+          outputs: type=oci,dest=${{ runner.temp }}/base.tar
+          provenance: false
+          pull: true
+          no-cache: ${{ github.event_name == 'schedule' }}
+          cache-from: type=gha,scope=buildkit
+          cache-to: type=gha,mode=max,scope=buildkit
+
+      - name: Upload shared base
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: shared-base-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/base.tar
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  build:
+    needs: base
+
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: thin
+            suffix: ''
+          - target: ffmpeg
+            suffix: '-ffmpeg'
+          - target: vips
+            suffix: '-vips'
+    permissions:
+      contents: read
+      packages: write
+      # Completes the identity challenge with sigstore/fulcio outside of PRs.
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install cosign
+        if: github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: 'v3.0.6'
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+
+      - name: Download shared base
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.base.outputs.artifact-id }}
+          path: ${{ runner.temp }}/shared-base
+          merge-multiple: true
+
+      - name: Resolve shared base context
+        id: base-context
+        run: |
+          mkdir -p "$RUNNER_TEMP/base"
+          tar -xf "$RUNNER_TEMP/shared-base/base.tar" -C "$RUNNER_TEMP/base"
+          digest="$(jq -er '.manifests | select(length == 1) | .[0].digest' "$RUNNER_TEMP/base/index.json")"
+          echo "context=base=oci-layout://$RUNNER_TEMP/base@$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Log into registry ${{ env.REGISTRY }}
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            latest=false
+            suffix=${{ matrix.suffix }}
+          # Refresh the moving PHP tag on pushes AND schedules. SHA tags name
+          # source revisions; dated tags identify each variant's nightly build.
+          tags: |
+            type=raw,value=${{ github.ref_name }},enable=${{ github.event_name != 'pull_request' }}
+            type=ref,event=pr
+            type=sha,format=long,enable=${{ github.event_name == 'push' }}
+            type=schedule,pattern={{date 'YYYYMMDD'}}
+
+      # linux/amd64 only: Bitbucket Pipelines runs amd64, and an emulated arm64
+      # leg would double the build for an architecture no pipeline pulls.
+      #
+      # A pull request builds without pushing, so it still runs the invariant
+      # check baked into the Dockerfile - which is why that check lives there
+      # and not only in the smoke test below.
+      - name: Build and push variant
+        id: build-and-push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          build-contexts: ${{ steps.base-context.outputs.context }}
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # The named context replaces the base stage; matrix jobs never
+          # rebuild it. Refresh only the selected variant on nightly runs.
+          no-cache-filters: ${{ github.event_name == 'schedule' && matrix.target || '' }}
+          cache-from: type=gha,scope=php-ci-${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=php-ci-${{ matrix.target }}
+
+      # The image exists to run a gate, so a base bump that breaks it breaks every
+      # pipeline at once. The pull request build is what catches that before the
+      # branch moves; this asserts the two things such a bump breaks silently -
+      # which coverage driver is loaded, and whether pnpm is the pinned binary
+      # or a corepack shim that fetches one at runtime.
+      # Runs against the published digest, so it tests what a pipeline will
+      # actually pull rather than what the builder believes it made. A pull
+      # request has nothing to pull; its equivalent ran inside the build.
+      #
+      # SVG is here for the same reason: the delegates come from a package whose
+      # name carries the ImageMagick soname, so a base bump can drop them while
+      # every other assertion still passes.
+      - name: Smoke test the published image
+        if: ${{ github.event_name != 'pull_request' }}
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build-and-push.outputs.digest }}
+          VARIANT: ${{ matrix.target }}
+        run: |
+          docker run --rm -e VARIANT "$IMAGE" bash -c '
+            set -eu
+            php -v
+            php -m | grep -qx typst || { echo "typst is not loaded"; exit 1; }
+            php -r "exit(str_starts_with((new Typst\\Compiler(new Typst\\World()))->compileString(\"Hello from Typst\")->toPdf()->bytes(), \"%PDF-\") ? 0 : 1);" || { echo "typst cannot compile PDFs"; exit 1; }
+            php -m | grep -qx pcov   || { echo "pcov is not loaded"; exit 1; }
+            php -m | grep -qx xdebug && { echo "xdebug must not be loaded"; exit 1; }
+            php -r "exit(array_diff([\"SVG\", \"MSVG\", \"SVGZ\"], Imagick::queryFormats()) === [] ? 0 : 1);" || { echo "imagick cannot read SVG"; exit 1; }
+            test "$(php -r "echo ini_get(\"zend.assertions\");")" = "1" || { echo "assertions are not compiled in"; exit 1; }
+            test "$(pnpm -v | cut -d. -f1)" = "12" || { echo "pnpm is not 12: $(pnpm -v)"; exit 1; }
+            for b in git composer node gs; do
+              command -v "$b" >/dev/null || { echo "$b missing"; exit 1; }
+            done
+            smoke_dir="$(mktemp -d)"
+            trap "rm -rf \"$smoke_dir\"" EXIT
+            if [ "$VARIANT" = "ffmpeg" ]; then
+              ffmpeg -hide_banner -loglevel error -f lavfi -i color=c=black:s=160x90:r=1 \
+                -t 1 -c:v libx264 -pix_fmt yuv420p "$smoke_dir/video.mp4"
+              test "$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,width,height \
+                -of csv=p=0 "$smoke_dir/video.mp4")" = "h264,160,90"
+              ffmpeg -hide_banner -loglevel error -i "$smoke_dir/video.mp4" \
+                -frames:v 1 -threads 1 "$smoke_dir/thumbnail.png"
+              test "$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,width,height \
+                -of csv=p=0 "$smoke_dir/thumbnail.png")" = "png,160,90"
+            elif [ "$VARIANT" = "vips" ]; then
+              php -r "\$vips = FFI::cdef(\"int vips_init(const char *argv0); const char *vips_version_string(void);\", \"libvips.so.42\"); exit(\$vips->vips_init(\"php\") === 0 ? 0 : 1);" || { echo "FFI cannot load libvips"; exit 1; }
+              vips black "$smoke_dir/image.png" 160 90 --bands 3
+              cjxl "$smoke_dir/image.png" "$smoke_dir/image.jxl" -p
+              jxlinfo "$smoke_dir/image.jxl" | grep -q "JPEG XL image, 160x90" || { echo "jxlinfo cannot read JPEG XL"; exit 1; }
+              djxl "$smoke_dir/image.jxl" "$smoke_dir/jxl.png"
+              if VIPS_BLOCK_UNTRUSTED=1 vipsheader "$smoke_dir/image.jxl"; then echo "vipsheader must refuse JPEG XL with untrusted loaders blocked"; exit 1; fi
+              avifenc --progressive "$smoke_dir/image.png" "$smoke_dir/image.avif"
+              test "$(VIPS_BLOCK_UNTRUSTED=1 vipsheader -f heif-compression "$smoke_dir/image.avif")" = "av1"
+              vips heifsave "$smoke_dir/image.png" "$smoke_dir/image.heic" --compression hevc
+              test "$(VIPS_BLOCK_UNTRUSTED=1 vipsheader -f heif-compression "$smoke_dir/image.heic")" = "hevc"
+              vips copy "$smoke_dir/image.heic" "$smoke_dir/heic.png"
+            else
+              for binary in ffmpeg ffprobe vips vipsheader cjxl djxl jxlinfo avifenc; do
+                if command -v "$binary"; then echo "$binary must not be installed in the thin image"; exit 1; fi
+              done
+            fi
+            echo "smoke test ok"
+          '
+
+      - name: Sign the published Docker image
+        if: ${{ github.event_name != 'pull_request' }}
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build-and-push.outputs.digest }}
+        run: |
+          echo "${TAGS}" | xargs -I {} cosign sign --yes "{}@${DIGEST}"
