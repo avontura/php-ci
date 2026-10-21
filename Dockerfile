@@ -8,7 +8,7 @@
 # targets add the video and image tools a Pest step needs. What is added to both is xdebug
 # installed but switched off, and what imagick needs to be the whole extension:
 # the delegates below, and ghostscript.
-FROM ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7 AS base
+FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944 AS base
 
 ARG PHP_VERSION=8.5
 ARG TYPST_VERSION=0.2.0
