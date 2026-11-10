@@ -4,8 +4,10 @@
 # pipeline runs is the toolchain a developer runs. What is dropped is the part
 # that makes Sail a dev server rather than a build environment: supervisor and
 # start-container, the EXPOSE/ENTRYPOINT pair, the sail user and its setcap, and
-# `playwright install-deps`. The default target stays thin; the ffmpeg and vips
-# targets add the video and image tools a Pest step needs. What is added to both is xdebug
+# `playwright install-deps`, which only the playwright target carries. The default
+# target stays thin; the ffmpeg and vips targets add the video and image tools a
+# Pest step needs, the playwright target the libraries a downloaded Chromium
+# needs. What is added to every target is xdebug
 # installed but switched off, and what imagick needs to be the whole extension:
 # the delegates below, and ghostscript.
 FROM ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c AS base

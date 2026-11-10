@@ -57,19 +57,17 @@ version pinned in the Dockerfile, and no browser. The step downloads Chromium
 itself, so the browser always matches the project's own Playwright version, and
 caches the download keyed on the lockfile:
 
-    definitions:
-      caches:
-        playwright: ~/.cache/ms-playwright
-
     - step:
         name: Browser tests
         image:
           name: ghcr.io/avontura/php-ci:8.5-playwright
         caches:
+          - pnpm
           - playwright
         script:
+          - pnpm install --frozen-lockfile --store-dir=/tmp/pnpm-store
           - pnpm exec playwright install chromium
-          - composer run test:browser
+          - composer run test:pest -- --ci --testsuite=Browser
 
 Key the cache on `pnpm-lock.yaml`, so a Playwright bump fetches the new browser
 and an unchanged lockfile reuses the old one:
