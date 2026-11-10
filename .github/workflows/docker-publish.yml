@@ -69,6 +69,8 @@ jobs:
             suffix: '-ffmpeg'
           - target: vips
             suffix: '-vips'
+          - target: playwright
+            suffix: '-playwright'
     permissions:
       contents: read
       packages: write
@@ -162,13 +164,20 @@ jobs:
       # SVG is here for the same reason: the delegates come from a package whose
       # name carries the ImageMagick soname, so a base bump can drop them while
       # every other assertion still passes.
+      # Read from the Dockerfile so the smoke test downloads the Chromium that
+      # install-deps was chosen for, with no second copy of the version to drift.
+      - name: Read pinned Playwright version
+        id: playwright
+        run: echo "version=$(sed -n 's/^ARG PLAYWRIGHT_VERSION=//p' Dockerfile)" >> "$GITHUB_OUTPUT"
+
       - name: Smoke test the published image
         if: ${{ github.event_name != 'pull_request' }}
         env:
+          PLAYWRIGHT_VERSION: ${{ steps.playwright.outputs.version }}
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build-and-push.outputs.digest }}
           VARIANT: ${{ matrix.target }}
         run: |
-          docker run --rm -e VARIANT "$IMAGE" bash -c '
+          docker run --rm -e VARIANT -e PLAYWRIGHT_VERSION "$IMAGE" bash -c '
             set -eu
             php -v
             php -m | grep -qx typst || { echo "typst is not loaded"; exit 1; }
@@ -204,6 +213,16 @@ jobs:
               vips heifsave "$smoke_dir/image.png" "$smoke_dir/image.heic" --compression hevc
               test "$(VIPS_BLOCK_UNTRUSTED=1 vipsheader -f heif-compression "$smoke_dir/image.heic")" = "hevc"
               vips copy "$smoke_dir/image.heic" "$smoke_dir/heic.png"
+            elif [ "$VARIANT" = "playwright" ]; then
+              # The image carries no browser, so download one the way a pipeline
+              # does and launch it. The version is the one the Dockerfile pins.
+              cd "$smoke_dir"
+              export PLAYWRIGHT_BROWSERS_PATH="$smoke_dir/browsers"
+              npx -y "playwright@$PLAYWRIGHT_VERSION" install chromium
+              chrome="$(find "$PLAYWRIGHT_BROWSERS_PATH" -type f -name chrome -path "*chromium-*" | head -n 1)"
+              test -n "$chrome" || { echo "playwright did not download chromium"; exit 1; }
+              if ldd "$chrome" | grep "not found"; then echo "chromium has unresolved libraries"; exit 1; fi
+              "$chrome" --headless --no-sandbox --disable-gpu --dump-dom about:blank | grep -q "<html" || { echo "chromium cannot launch headless"; exit 1; }
             else
               for binary in ffmpeg ffprobe vips vipsheader cjxl djxl jxlinfo avifenc; do
                 if command -v "$binary"; then echo "$binary must not be installed in the thin image"; exit 1; fi

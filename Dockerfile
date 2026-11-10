@@ -4,8 +4,10 @@
 # pipeline runs is the toolchain a developer runs. What is dropped is the part
 # that makes Sail a dev server rather than a build environment: supervisor and
 # start-container, the EXPOSE/ENTRYPOINT pair, the sail user and its setcap, and
-# `playwright install-deps`. The default target stays thin; the ffmpeg and vips
-# targets add the video and image tools a Pest step needs. What is added to both is xdebug
+# `playwright install-deps`, which only the playwright target carries. The default
+# target stays thin; the ffmpeg and vips targets add the video and image tools a
+# Pest step needs, the playwright target the libraries a downloaded Chromium
+# needs. What is added to every target is xdebug
 # installed but switched off, and what imagick needs to be the whole extension:
 # the delegates below, and ghostscript.
 FROM ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c AS base
@@ -206,6 +208,27 @@ RUN set -eux; \
     vips heifsave "$smoke_dir/image.png" "$smoke_dir/image.heic" --compression hevc; \
     test "$(VIPS_BLOCK_UNTRUSTED=1 vipsheader -f heif-compression "$smoke_dir/image.heic")" = "hevc"; \
     vips copy "$smoke_dir/image.heic" "$smoke_dir/heic.png"
+
+# Pest's browser tests drive Chromium through Playwright. The image carries only
+# the OS libraries Chromium links against, not a browser: the pipeline step runs
+# `pnpm exec playwright install chromium` (no --with-deps), so the browser always
+# matches the project's own Playwright version instead of whichever one was
+# current when this image was built. install-deps is Playwright's own list for
+# this Ubuntu, which is why it is used rather than a hand-kept package list that
+# drifts; it installs with --no-install-recommends. npx leaves its cache behind,
+# and nothing in it is needed afterwards.
+FROM base AS playwright
+
+# Only selects the dependency list install-deps installs; the browser a pipeline
+# downloads comes from the project's own Playwright, not from this version.
+ARG PLAYWRIGHT_VERSION=1.65.0
+
+RUN set -eux; \
+    npx -y playwright@${PLAYWRIGHT_VERSION} install-deps chromium; \
+    apt-get -y autoremove; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/* /root/.npm /tmp/* /var/tmp/*; \
+    if [ -e /root/.cache/ms-playwright ]; then echo "no browser may be baked into the playwright image"; exit 1; fi
 
 # The last stage is the default for a plain `docker build`; it must stay thin.
 FROM base AS thin

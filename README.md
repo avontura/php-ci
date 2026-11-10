@@ -22,13 +22,14 @@ as root, and the two packages imagick needs and does not pull —
 ImageMagick soname is in the first package's name, so a base bump that moves it
 fails this build rather than a project's.
 
-The shared Dockerfile publishes three variants:
+The shared Dockerfile publishes four variants:
 
 | Tag | Build target | Use |
 |---|---|---|
 | `8.5` | `thin` (default) | Global pipeline image: dependency installation, formatting, static analysis, type coverage and frontend builds |
 | `8.5-ffmpeg` | `ffmpeg` | Pest steps only; adds Ubuntu's `ffmpeg` package, including `ffprobe`, with `--no-install-recommends` |
 | `8.5-vips` | `vips` | Pest steps only; adds libvips for FFI (`jcupitt/vips`) with `libvips-tools`, `libjxl-tools`, `libavif-bin` and the libheif plugins that read HEIC and AVIF and write HEIC |
+| `8.5-playwright` | `playwright` | Browser-test step only; carries Chromium's OS libraries, the step downloads the browser with `pnpm exec playwright install chromium` |
 
 Keep the global image thin and override the image on the Pest step:
 
@@ -46,8 +47,39 @@ consumer pipelines. FFI itself is in the base: PHP's default
 `ffi.enable=preload` allows it on the CLI, so `composer install` of
 `jcupitt/vips` passes on the thin image. Roll out the override
 only after the variant has been published, passed its published-digest smoke
-test and been signed; other steps retain `:8.5`. Neither variant adds a database
+test and been signed; other steps retain `:8.5`. No variant adds a database
 client.
+
+`8.5-playwright` is for the browser-test step (`pestphp/pest-plugin-browser`,
+which drives Playwright). It carries only the OS libraries Chromium links
+against, installed with `playwright install-deps chromium` for the Playwright
+version pinned in the Dockerfile, and no browser. The step downloads Chromium
+itself, so the browser always matches the project's own Playwright version, and
+caches the download keyed on the lockfile:
+
+    - step:
+        name: Browser tests
+        image:
+          name: ghcr.io/avontura/php-ci:8.5-playwright
+        caches:
+          - pnpm
+          - playwright
+        script:
+          - pnpm install --frozen-lockfile --store-dir=/tmp/pnpm-store
+          - pnpm exec playwright install chromium
+          - composer run test:pest -- --ci --testsuite=Browser
+
+Key the cache on `pnpm-lock.yaml`, so a Playwright bump fetches the new browser
+and an unchanged lockfile reuses the old one:
+
+    playwright:
+      key:
+        files:
+          - pnpm-lock.yaml
+      path: ~/.cache/ms-playwright
+
+Do not pass `--with-deps`: the libraries are already in the image, and the
+install would need root and apt at runtime.
 
 The larger FFmpeg and libvips dependency trees belong only in the variants that
 need them.
@@ -94,23 +126,23 @@ wants a debugger turns it on deliberately:
 
 ## One branch per PHP version
 
-The branch **is** the version: `8.5` builds and publishes `:8.5`, `:8.5-ffmpeg`
-and `:8.5-vips`, and a future `8.4` branch would publish the corresponding tags
+The branch **is** the version: `8.5` builds and publishes `:8.5`, `:8.5-ffmpeg`,
+`:8.5-vips` and `:8.5-playwright`, and a future `8.4` branch would publish the corresponding tags
 from the same file with its `ARG PHP_VERSION` changed. A fix that applies to
 both PHP versions is a cherry-pick. A prerequisite job builds the shared `base`
-once, then a matrix builds `thin`, `ffmpeg` and `vips` independently. Each
+once, then a matrix builds `thin`, `ffmpeg`, `vips` and `playwright` independently. Each
 variant has its own smoke test, publication and signing.
 
 ## Tags
 
-| Thin | FFmpeg | libvips | Meaning |
-|---|---|---|---|
-| `8.5` | `8.5-ffmpeg` | `8.5-vips` | Moving PHP branch tags, refreshed on pushes and nightly schedules |
-| `sha-<full sha>` | `sha-<full sha>-ffmpeg` | `sha-<full sha>-vips` | Source revision tags published on pushes |
-| `YYYYMMDD` | `YYYYMMDD-ffmpeg` | `YYYYMMDD-vips` | Nightly builds, dated in UTC |
+| Thin | FFmpeg | libvips | Playwright | Meaning |
+|---|---|---|---|---|
+| `8.5` | `8.5-ffmpeg` | `8.5-vips` | `8.5-playwright` | Moving PHP branch tags, refreshed on pushes and nightly schedules |
+| `sha-<full sha>` | `sha-<full sha>-ffmpeg` | `sha-<full sha>-vips` | `sha-<full sha>-playwright` | Source revision tags published on pushes |
+| `YYYYMMDD` | `YYYYMMDD-ffmpeg` | `YYYYMMDD-vips` | `YYYYMMDD-playwright` | Nightly builds, dated in UTC |
 
-Pull requests build all three targets without publishing; their metadata uses
-`pr-<number>`, `pr-<number>-ffmpeg` and `pr-<number>-vips`. Variant cache
+Pull requests build all four targets without publishing; their metadata uses
+`pr-<number>`, `pr-<number>-ffmpeg`, `pr-<number>-vips` and `pr-<number>-playwright`. Variant cache
 scopes are separate.
 
 The prerequisite exports the base as an OCI image-layout artifact. Each matrix
@@ -134,7 +166,9 @@ Build-time checks and published-digest smoke tests preserve the shared PHP,
 Typst, coverage-driver, assertions, ImageMagick and toolchain invariants. They
 also check that the thin image has neither video binary and that the FFmpeg
 variant can generate an H.264 video, probe its codec and dimensions, extract a
-PNG thumbnail and probe that thumbnail. Temporary media is removed.
+PNG thumbnail and probe that thumbnail. Temporary media is removed. The
+Playwright variant's smoke test downloads Chromium the way a pipeline does,
+checks it for unresolved libraries and launches it headless.
 
 Every successfully smoke-tested published digest is signed with
 [cosign](https://github.com/sigstore/cosign):
@@ -149,9 +183,10 @@ Every successfully smoke-tested published digest is signed with
     docker build --platform linux/amd64 --target thin -t php-ci:8.5 .
     docker build --platform linux/amd64 --target ffmpeg -t php-ci:8.5-ffmpeg .
     docker build --platform linux/amd64 --target vips -t php-ci:8.5-vips .
+    docker build --platform linux/amd64 --target playwright -t php-ci:8.5-playwright .
 
 The first two commands produce the same thin image. Every final target inherits
-the shared `base` stage; a default build installs neither FFmpeg nor libvips.
+the shared `base` stage; a default build installs neither FFmpeg, libvips nor Chromium's libraries.
 
 `--platform linux/amd64` matters on Apple Silicon: Bitbucket runs amd64, and the
 image is published for that architecture alone. The pinned Typst binary is
