@@ -10,6 +10,45 @@
 # needs. What is added to every target is xdebug installed but switched off, and
 # what imagick needs to be the whole extension: the delegates below, and
 # ghostscript.
+#
+# Needs BuildKit (ADD --checksum, RUN --mount): docker buildx, or Docker 23 and
+# later, where it is the default builder.
+
+ARG PHP_VERSION=8.5
+
+# Typst, pnpm and Composer are pinned release files, each verified by BuildKit
+# against the checksum declared next to its version: a bump changes both lines
+# together. Dependabot tracks none of them. Declared before the first FROM,
+# since the download stages below need them too; a stage only sees the ones it
+# declares again.
+#
+# The Typst archive is built per PHP version, so its checksum changes with
+# PHP_VERSION too.
+ARG TYPST_VERSION=0.4.0
+ARG TYPST_SHA256=b547b09b5a1c8ffdf2dde8f77f7cf7eeb4da794932b9b8de78830615675ffa69
+ARG PNPM_VERSION=12.22.0
+ARG PNPM_SHA256=07ee196f91af1e21edb0c794401f4152932c74b0dba5d415dc4dbd5783f3c7af
+ARG COMPOSER_VERSION=2.11.2
+ARG COMPOSER_SHA256=dd158c0afd41d15fac89e1b4e47b5d42911fe316c3687cd5edac98319b25d028
+
+# The archives are fetched in stages of their own and bind-mounted into the RUN
+# that unpacks them, so no archive lands in a layer of the image. BuildKit also
+# fetches them while the apt layer is still building.
+FROM scratch AS typst-download
+ARG PHP_VERSION
+ARG TYPST_VERSION
+ARG TYPST_SHA256
+ADD --checksum=sha256:${TYPST_SHA256} \
+    https://github.com/carthage-software/ext-typst/releases/download/${TYPST_VERSION}/php_typst-${TYPST_VERSION}_php${PHP_VERSION}-x86_64-linux-glibc.zip \
+    /typst.zip
+
+FROM scratch AS pnpm-download
+ARG PNPM_VERSION
+ARG PNPM_SHA256
+ADD --checksum=sha256:${PNPM_SHA256} \
+    https://github.com/pnpm/pnpm/releases/download/v${PNPM_VERSION}/pnpm-linux-x64.tar.gz \
+    /pnpm.tar.gz
+
 FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db AS base
 
 # Every RUN in every stage stops at its first failing command, including one on
@@ -21,19 +60,18 @@ FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da0
 SHELL ["/bin/bash", "-euxo", "pipefail", "-c"]
 
 # Only what the apt layer needs is declared here. Every RUN after an ARG sees it,
-# so a version declared at the top would rebuild the apt layer on every bump;
-# the pinned downloads declare theirs just above their own step instead.
-ARG PHP_VERSION=8.5
+# so a version declared here would rebuild the apt layer on every bump; the
+# pinned downloads declare theirs just above their own step instead.
+ARG PHP_VERSION
 ARG NODE_VERSION=24
-# One retry and timeout policy for every download in the file. Unquoted where it
-# is used, so the shell splits it into separate flags. -f makes an HTTP error a
-# curl error instead of a saved error page.
+# One retry and timeout policy for the two keys the apt layer fetches. Unquoted
+# where it is used, so the shell splits it into separate flags. -f makes an HTTP
+# error a curl error instead of a saved error page.
 ARG CURL_OPTS="-fsSL --retry 3 --retry-all-errors --connect-timeout 15 --max-time 120"
 
 # Typst and pnpm are fetched as x86_64 binaries, and Bitbucket runs amd64 only.
 # A plain `docker build .` on Apple Silicon builds arm64 and would otherwise fail
 # much later, on an ELF error from typst.so or an exec format error from pnpm.
-# dpkg rather than TARGETARCH: the legacy builder leaves TARGETARCH empty, and
 # dpkg answers for the image actually being built.
 RUN arch="$(dpkg --print-architecture)"; \
     if [ "$arch" != amd64 ]; then echo "this image is amd64 only, not $arch: build with --platform linux/amd64"; exit 1; fi
@@ -124,45 +162,35 @@ RUN apt-get update \
     # and python3-dev, which is a different image rather than a bigger one.
     && rm -rf /usr/include/node /usr/share/doc /usr/share/man /usr/share/info
 
-# Typst, pnpm and Composer are pinned release files, each verified against the
-# checksum declared next to its version: a bump changes both lines together.
-# Dependabot tracks none of them.
-
 # The upstream amd64 glibc/NTS binary for the distro PHP, without a Rust
-# toolchain. The archive is built per PHP version, so the checksum changes with
-# PHP_VERSION too. The compile check proves the extension loads; the checksum
-# already proves it is the pinned version.
-ARG TYPST_VERSION=0.4.0
-ARG TYPST_SHA256=b547b09b5a1c8ffdf2dde8f77f7cf7eeb4da794932b9b8de78830615675ffa69
-RUN curl $CURL_OPTS -o /tmp/typst.zip "https://github.com/carthage-software/ext-typst/releases/download/${TYPST_VERSION}/php_typst-${TYPST_VERSION}_php${PHP_VERSION}-x86_64-linux-glibc.zip"; \
-    printf '%s  /tmp/typst.zip\n' "$TYPST_SHA256" | sha256sum -c -; \
+# toolchain. The compile check proves the extension loads; the checksum already
+# proves it is the pinned version.
+RUN --mount=type=bind,from=typst-download,source=/typst.zip,target=/tmp/typst.zip \
     unzip -j /tmp/typst.zip '*.so' -d /tmp/typst; \
     install -m 644 /tmp/typst/typst.so "$(php -r 'echo ini_get("extension_dir");')/typst.so"; \
     printf 'extension=typst.so\n' > /etc/php/${PHP_VERSION}/mods-available/typst.ini; \
     phpenmod -v ${PHP_VERSION} -s ALL typst; \
     php -r 'exit(str_starts_with((new Typst\Compiler(new Typst\World()))->compileString("Hello from Typst")->toPdf()->bytes(), "%PDF-") ? 0 : 1);'; \
-    rm -rf /tmp/typst.zip /tmp/typst
+    rm -rf /tmp/typst
 
 # pnpm's native binary, so pnpm does not depend on the Node install. The archive
 # carries the executable and the dist/ tree it expects next to it; `pnpm pm
 # setup` lays both out in PNPM_HOME, as get.pnpm.io's installer does, without
 # the installer's shell-profile edits.
-ARG PNPM_VERSION=12.22.0
-ARG PNPM_SHA256=07ee196f91af1e21edb0c794401f4152932c74b0dba5d415dc4dbd5783f3c7af
-RUN curl $CURL_OPTS -o /tmp/pnpm.tar.gz "https://github.com/pnpm/pnpm/releases/download/v${PNPM_VERSION}/pnpm-linux-x64.tar.gz"; \
-    printf '%s  /tmp/pnpm.tar.gz\n' "$PNPM_SHA256" | sha256sum -c -; \
+RUN --mount=type=bind,from=pnpm-download,source=/pnpm.tar.gz,target=/tmp/pnpm.tar.gz \
     mkdir /tmp/pnpm; \
     tar -xzf /tmp/pnpm.tar.gz -C /tmp/pnpm; \
     /tmp/pnpm/pnpm pm setup --force --no-modify-path; \
-    rm -rf /tmp/pnpm.tar.gz /tmp/pnpm
+    rm -rf /tmp/pnpm
 
 # composer.phar itself rather than the installer: the installer is unversioned
-# code run as root, and installs whichever Composer is current on the day.
-ARG COMPOSER_VERSION=2.11.2
-ARG COMPOSER_SHA256=dd158c0afd41d15fac89e1b4e47b5d42911fe316c3687cd5edac98319b25d028
-RUN curl $CURL_OPTS -o /usr/bin/composer "https://getcomposer.org/download/${COMPOSER_VERSION}/composer.phar"; \
-    printf '%s  /usr/bin/composer\n' "$COMPOSER_SHA256" | sha256sum -c -; \
-    chmod 755 /usr/bin/composer
+# code run as root, and installs whichever Composer is current on the day. The
+# phar is the installed file, so it is added straight to its place.
+ARG COMPOSER_VERSION
+ARG COMPOSER_SHA256
+ADD --chmod=755 --checksum=sha256:${COMPOSER_SHA256} \
+    https://getcomposer.org/download/${COMPOSER_VERSION}/composer.phar \
+    /usr/bin/composer
 
 # zend.assertions stays on. The distro ships php.ini-production, which sets it to
 # -1: assert() is then not compiled at all, so the call never runs and the line
@@ -181,6 +209,8 @@ RUN curl $CURL_OPTS -o /usr/bin/composer "https://getcomposer.org/download/${COM
 # the build, so a pull request that bumps the base image fails here rather than
 # after the branch has published.
 COPY checks/php-ci-check /usr/local/bin/php-ci-check
+# The check compares pnpm against the pinned version.
+ARG PNPM_VERSION
 
 RUN phpdismod -v ${PHP_VERSION} -s ALL xdebug; \
     phpenmod -v ${PHP_VERSION} -s ALL pcov; \

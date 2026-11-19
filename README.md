@@ -183,6 +183,9 @@ Every successfully smoke-tested published digest is signed with
 
 ## Building locally
 
+The Dockerfile needs BuildKit (`ADD --checksum`, `RUN --mount`), which is the
+default builder from Docker 23 and in OrbStack.
+
     docker build --platform linux/amd64 -t php-ci:8.5 .
     docker build --platform linux/amd64 --target thin -t php-ci:8.5 .
     docker build --platform linux/amd64 --target ffmpeg -t php-ci:8.5-ffmpeg .
