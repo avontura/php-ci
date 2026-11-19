@@ -10,10 +10,10 @@
 # needs. What is added to every target is xdebug
 # installed but switched off, and what imagick needs to be the whole extension:
 # the delegates below, and ghostscript.
-FROM ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c AS base
+FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db AS base
 
 ARG PHP_VERSION=8.5
-ARG TYPST_VERSION=0.2.0
+ARG TYPST_VERSION=0.4.0
 ARG NODE_VERSION=24
 ARG PNPM_VERSION=next-12
 ARG PNPM_MAJOR=12
@@ -107,10 +107,10 @@ RUN apt-get update \
     && rm -rf /usr/include/node /usr/share/doc /usr/share/man /usr/share/info
 
 # Use the upstream amd64 glibc/NTS binary for the distro PHP, without a Rust toolchain.
-# Checksum is for Typst 0.2.0 / PHP 8.5; update it with either version.
+# Checksum is for Typst 0.4.0 / PHP 8.5; update it with either version.
 RUN set -eux; \
     curl -fsSL --retry 3 --retry-all-errors --connect-timeout 15 --max-time 120 "https://github.com/carthage-software/ext-typst/releases/download/${TYPST_VERSION}/php_typst-${TYPST_VERSION}_php${PHP_VERSION}-x86_64-linux-glibc.zip" -o /tmp/typst.zip; \
-    printf '%s  /tmp/typst.zip\n' 926df3d4ba0cc8e5176d956e1fb8433efe2972ed62d12278758f6a44a94b0952 | sha256sum -c -; \
+    printf '%s  /tmp/typst.zip\n' b547b09b5a1c8ffdf2dde8f77f7cf7eeb4da794932b9b8de78830615675ffa69 | sha256sum -c -; \
     unzip -j /tmp/typst.zip '*.so' -d /tmp/typst; \
     install -m 644 /tmp/typst/typst.so "$(php -r 'echo ini_get("extension_dir");')/typst.so"; \
     printf 'extension=typst.so\n' > /etc/php/${PHP_VERSION}/mods-available/typst.ini; \
@@ -221,7 +221,7 @@ FROM base AS playwright
 
 # Only selects the dependency list install-deps installs; the browser a pipeline
 # downloads comes from the project's own Playwright, not from this version.
-ARG PLAYWRIGHT_VERSION=1.65.0
+ARG PLAYWRIGHT_VERSION=1.65.1
 
 RUN set -eux; \
     npx -y playwright@${PLAYWRIGHT_VERSION} install-deps chromium; \
