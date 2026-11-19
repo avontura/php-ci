@@ -14,6 +14,9 @@
 # Needs BuildKit (ADD --checksum, RUN --mount): docker buildx, or Docker 23 and
 # later, where it is the default builder.
 
+# The default for a local build. The publish workflow builds every version in
+# its php matrix by passing PHP_VERSION; a version needs a typst-<version> stage
+# below before it can be added there.
 ARG PHP_VERSION=8.5
 
 # Typst, pnpm and Composer are pinned release files, each verified by BuildKit
@@ -21,11 +24,7 @@ ARG PHP_VERSION=8.5
 # together. Dependabot tracks none of them. Declared before the first FROM,
 # since the download stages below need them too; a stage only sees the ones it
 # declares again.
-#
-# The Typst archive is built per PHP version, so its checksum changes with
-# PHP_VERSION too.
 ARG TYPST_VERSION=0.4.0
-ARG TYPST_SHA256=b547b09b5a1c8ffdf2dde8f77f7cf7eeb4da794932b9b8de78830615675ffa69
 ARG PNPM_VERSION=12.22.0
 ARG PNPM_SHA256=07ee196f91af1e21edb0c794401f4152932c74b0dba5d415dc4dbd5783f3c7af
 ARG COMPOSER_VERSION=2.11.2
@@ -34,13 +33,19 @@ ARG COMPOSER_SHA256=dd158c0afd41d15fac89e1b4e47b5d42911fe316c3687cd5edac98319b25
 # The archives are fetched in stages of their own and bind-mounted into the RUN
 # that unpacks them, so no archive lands in a layer of the image. BuildKit also
 # fetches them while the apt layer is still building.
-FROM scratch AS typst-download
-ARG PHP_VERSION
+#
+# Typst publishes one archive per PHP version, so each version has a stage of
+# its own with its own checksum, and typst-download picks the one for
+# PHP_VERSION. BuildKit builds only the stage picked. A version without a stage
+# fails here, as `typst-<version>` not found: Typst has to ship for a PHP
+# version before this image can.
+FROM scratch AS typst-8.5
 ARG TYPST_VERSION
-ARG TYPST_SHA256
-ADD --checksum=sha256:${TYPST_SHA256} \
-    https://github.com/carthage-software/ext-typst/releases/download/${TYPST_VERSION}/php_typst-${TYPST_VERSION}_php${PHP_VERSION}-x86_64-linux-glibc.zip \
+ADD --checksum=sha256:b547b09b5a1c8ffdf2dde8f77f7cf7eeb4da794932b9b8de78830615675ffa69 \
+    https://github.com/carthage-software/ext-typst/releases/download/${TYPST_VERSION}/php_typst-${TYPST_VERSION}_php8.5-x86_64-linux-glibc.zip \
     /typst.zip
+
+FROM typst-${PHP_VERSION} AS typst-download
 
 FROM scratch AS pnpm-download
 ARG PNPM_VERSION

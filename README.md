@@ -105,7 +105,7 @@ delegate — and the failure arrives only when something reads a PDF:
 | | |
 |---|---|
 | Base | Ubuntu 26.04 LTS (resolute) |
-| PHP | 8.5.x from `packages.sury.org`, pinned above the distro's own |
+| PHP | 8.5.x from `packages.sury.org`, pinned above the distro's own; one image per version in the workflow's `php` matrix |
 | Coverage | **pcov enabled, xdebug installed but disabled** |
 | Assertions | `zend.assertions = 1`, as on a development machine — the distro's production ini compiles `assert()` out, which leaves the line uncovered |
 | Node | 24, with pnpm pinned to an exact 12.x (`PNPM_VERSION`) from its GitHub release — a native binary, so pnpm does not depend on the Node install. Dependabot does not track it: bump `PNPM_VERSION` and `PNPM_SHA256` together |
@@ -125,29 +125,60 @@ wants a debugger turns it on deliberately:
 
     - phpenmod -v 8.5 xdebug && XDEBUG_MODE=debug ...
 
-## One branch per PHP version
+## One branch, every PHP version
 
-The branch **is** the version: `8.5` builds and publishes `:8.5`, `:8.5-ffmpeg`,
-`:8.5-vips` and `:8.5-playwright`, and a future `8.4` branch would publish the corresponding tags
-from the same file with its `ARG PHP_VERSION` changed. A fix that applies to
-both PHP versions is a cherry-pick. A prerequisite job builds the shared `base`
-once, then a matrix builds `thin`, `ffmpeg`, `vips` and `playwright` independently. Each
-variant has its own smoke test, publication and signing.
+`main` builds every published PHP version from the same Dockerfile. The `php`
+matrix in `.github/workflows/docker-publish.yml` is the list of versions; each
+build passes its entry as `PHP_VERSION`, and its tags are named after the entry,
+so `8.5` publishes `:8.5`, `:8.5-ffmpeg`, `:8.5-vips` and `:8.5-playwright`. A
+fix applies to every version at once, with nothing to cherry-pick.
+
+Per PHP version, a prerequisite job builds the shared `base` once, then a matrix
+builds `thin`, `ffmpeg`, `vips` and `playwright` independently. Each variant has its own
+smoke test, publication and signing, and `php-ci-check` fails a build whose PHP
+is not the version its tags name.
+
+To add a version, for example 8.6:
+
+1. Check that Sury ships every `php8.6-*` package the Dockerfile installs: the
+   PECL extensions (pcov, xdebug, imagick, redis, igbinary, msgpack) usually
+   follow a PHP release by a few weeks.
+2. Check that ext-typst publishes a `php8.6-x86_64-linux-glibc` archive, and add
+   a `typst-8.6` stage with its checksum next to `typst-8.5` in the Dockerfile.
+3. Add `"8.6"` to both `php` matrices in the workflow (the `base` and `build`
+   jobs).
+
+Typst and every PHP extension are installed in `base`, which all four variants
+build on, so a version ships all four or none: until its extensions and Typst
+exist, there is no `8.6` and no `8.6-ffmpeg` either. Waiting is deliberate. A
+version published with fewer extensions would let `:8.6` quietly mean less than
+`:8.5`: without pcov there is no coverage and a coverage gate fails, and a
+project using imagick or redis breaks at runtime rather than at build time.
+Nothing has to remember this: a missing `php8.6-*` package fails the base build
+at `apt-get install`, and a missing Typst archive fails it at `typst-8.6`.
+
+Dropping a version is the reverse; its tags stay in the registry, unrefreshed.
 
 ## Tags
 
 | Thin | FFmpeg | libvips | Playwright | Meaning |
 |---|---|---|---|---|
-| `8.5` | `8.5-ffmpeg` | `8.5-vips` | `8.5-playwright` | Moving PHP branch tags, refreshed on pushes and nightly schedules |
-| `sha-<full sha>` | `sha-<full sha>-ffmpeg` | `sha-<full sha>-vips` | `sha-<full sha>-playwright` | Source revision tags published on pushes |
-| `YYYYMMDD` | `YYYYMMDD-ffmpeg` | `YYYYMMDD-vips` | `YYYYMMDD-playwright` | Nightly builds, dated in UTC |
+| `8.5` | `8.5-ffmpeg` | `8.5-vips` | `8.5-playwright` | Moving PHP version tags, refreshed on pushes and nightly schedules |
+| `8.5-sha-<full sha>` | `8.5-sha-<full sha>-ffmpeg` | `8.5-sha-<full sha>-vips` | `8.5-sha-<full sha>-playwright` | Source revision tags published on pushes |
+| `8.5-YYYYMMDD` | `8.5-YYYYMMDD-ffmpeg` | `8.5-YYYYMMDD-vips` | `8.5-YYYYMMDD-playwright` | Nightly builds, dated in UTC |
 
-Pull requests build all four targets without publishing; their metadata uses
-`pr-<number>`, `pr-<number>-ffmpeg`, `pr-<number>-vips` and `pr-<number>-playwright`. Variant cache
-scopes are separate.
+Every tag starts with its PHP version, so versions built from one commit or on
+one night never share a tag. Revision and nightly tags published before the
+version matrix have no PHP prefix (`sha-<full sha>`, `YYYYMMDD`); they are 8.5
+builds and stay in the registry.
 
-The prerequisite exports the base as an OCI image-layout artifact. Each matrix
-job downloads that exact artifact by ID and supplies its manifest digest as a
+Pull requests build all four targets for every version without publishing;
+their metadata uses `8.5-pr-<number>`, `8.5-pr-<number>-ffmpeg` and so on. Base
+and variant cache scopes are separate per PHP version.
+
+The prerequisite exports the base as an OCI image-layout artifact, named after
+its PHP version and run. Each matrix job downloads the artifact for its version
+and supplies its manifest digest as a
 named `base` build context, replacing the Dockerfile's base stage rather than
 rebuilding it. This also works on fork pull requests without registry write
 access. The artifact expires after one day; only the final variants are published.
@@ -184,7 +215,8 @@ Every successfully smoke-tested published digest is signed with
 ## Building locally
 
 The Dockerfile needs BuildKit (`ADD --checksum`, `RUN --mount`), which is the
-default builder from Docker 23 and in OrbStack.
+default builder from Docker 23 and in OrbStack. It builds PHP 8.5 by default;
+another version from the matrix takes `--build-arg PHP_VERSION=<version>`.
 
     docker build --platform linux/amd64 -t php-ci:8.5 .
     docker build --platform linux/amd64 --target thin -t php-ci:8.5 .
