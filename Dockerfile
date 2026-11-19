@@ -15,8 +15,7 @@ FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da0
 ARG PHP_VERSION=8.5
 ARG TYPST_VERSION=0.4.0
 ARG NODE_VERSION=24
-ARG PNPM_VERSION=next-12
-ARG PNPM_MAJOR=12
+ARG PNPM_VERSION=12.22.0
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
@@ -97,7 +96,6 @@ RUN apt-get update \
     && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_$NODE_VERSION.x nodistro main" > /etc/apt/sources.list.d/nodesource.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends nodejs \
-    && curl -fsSL https://get.pnpm.io/install.sh | env PNPM_VERSION=${PNPM_VERSION} ENV="$HOME/.bashrc" SHELL="$(which bash)" bash - \
     && apt-get -y autoremove \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
@@ -105,6 +103,19 @@ RUN apt-get update \
     # node-gyp to call - a project needing native modules needs build-essential
     # and python3-dev, which is a different image rather than a bigger one.
     && rm -rf /usr/include/node /usr/share/doc /usr/share/man /usr/share/info
+
+# pnpm's native binary from its GitHub release, so pnpm does not depend on the
+# Node install. The archive carries the executable and the dist/ tree it expects
+# next to it; `pnpm pm setup` lays both out in PNPM_HOME, as get.pnpm.io's
+# installer does, without the installer's shell-profile edits.
+# Checksum is for pnpm 12.22.0 linux-x64; update it with the version.
+RUN set -eux; \
+    curl -fsSL --retry 3 --retry-all-errors --connect-timeout 15 --max-time 120 "https://github.com/pnpm/pnpm/releases/download/v${PNPM_VERSION}/pnpm-linux-x64.tar.gz" -o /tmp/pnpm.tar.gz; \
+    printf '%s  /tmp/pnpm.tar.gz\n' 07ee196f91af1e21edb0c794401f4152932c74b0dba5d415dc4dbd5783f3c7af | sha256sum -c -; \
+    mkdir /tmp/pnpm; \
+    tar -xzf /tmp/pnpm.tar.gz -C /tmp/pnpm; \
+    (cd /tmp && /tmp/pnpm/pnpm pm setup --force --no-modify-path); \
+    rm -rf /tmp/pnpm.tar.gz /tmp/pnpm
 
 # Use the upstream amd64 glibc/NTS binary for the distro PHP, without a Rust toolchain.
 # Checksum is for Typst 0.4.0 / PHP 8.5; update it with either version.
@@ -144,7 +155,7 @@ RUN set -eux; \
     if php -m | grep -qx xdebug; then echo "xdebug must not be loaded"; exit 1; fi; \
     php -r 'exit(array_diff(["SVG", "MSVG", "SVGZ"], Imagick::queryFormats()) === [] ? 0 : 1);'; \
     test "$(php -r 'echo ini_get("zend.assertions");')" = "1"; \
-    test "$(pnpm -v | cut -d. -f1)" = "${PNPM_MAJOR}"; \
+    test "$(pnpm -v)" = "${PNPM_VERSION}"; \
     for b in git composer node gs; do command -v "$b" >/dev/null; done
 
 # Bitbucket clones into the working directory as root; without this, git refuses
