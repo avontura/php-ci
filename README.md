@@ -154,7 +154,8 @@ exist, there is no `8.6` and no `8.6-ffmpeg` either. Waiting is deliberate. A
 version published with fewer extensions would let `:8.6` quietly mean less than
 `:8.5`: without pcov there is no coverage and a coverage gate fails, and a
 project using imagick or redis breaks at runtime rather than at build time.
-`php-ci-check` enforces the full set for every version.
+Nothing has to remember this: a missing `php8.6-*` package fails the base build
+at `apt-get install`, and a missing Typst archive fails it at `typst-8.6`.
 
 Dropping a version is the reverse; its tags stay in the registry, unrefreshed.
 
