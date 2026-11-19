@@ -12,6 +12,14 @@
 # ghostscript.
 FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db AS base
 
+# Every RUN in every stage stops at its first failing command, including one on
+# the left of a pipe: /bin/sh has no pipefail, so in `curl ... | gpg` a failed
+# fetch would become an empty keyring and fail a step later, on NO_PUBKEY. -x
+# puts each command in the build log. The stages built from base inherit it.
+# checks/php-ci-check keeps its own #!/bin/sh: a `| grep -q` there is safe
+# without pipefail, and would fail at random with it.
+SHELL ["/bin/bash", "-euxo", "pipefail", "-c"]
+
 # Only what the apt layer needs is declared here. Every RUN after an ARG sees it,
 # so a version declared at the top would rebuild the apt layer on every bump;
 # the pinned downloads declare theirs just above their own step instead.
@@ -53,13 +61,6 @@ RUN printf 'Acquire::Retries "3";\nAPT::Update::Error-Mode "any";\n' \
 # timed out from the GitHub runners and took the ffmpeg variant down with it.
 # Both extra repositories are set up before a single shared index fetch, rather
 # than one fetch each.
-#
-# Every download in this file goes to a file before anything reads it. /bin/sh
-# has no pipefail, so in `curl ... | gpg` only the right-hand side's exit status
-# counts: a failed fetch becomes an empty keyring, and the build fails a step
-# later on NO_PUBKEY rather than here. pipefail for the whole file is not the
-# fix: with it, `php -m | grep -qx ...` fails whenever grep exits on its match
-# while php is still writing.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && sed -i '/^URIs:/ s|http://|https://|g' /etc/apt/sources.list.d/ubuntu.sources \
@@ -72,8 +73,7 @@ RUN apt-get update \
     && dpkg -i /tmp/debsuryorg-archive-keyring.deb \
     && echo "deb [signed-by=/usr/share/keyrings/debsuryorg-archive-keyring.gpg] https://packages.sury.org/php/ $(. /etc/os-release && echo $VERSION_CODENAME) main" > /etc/apt/sources.list.d/php.list \
     && printf 'Package: php*\nPin: origin packages.sury.org\nPin-Priority: 1001\n' > /etc/apt/preferences.d/sury \
-    && curl $CURL_OPTS -o /tmp/nodesource.key https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
-    && gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg /tmp/nodesource.key \
+    && curl $CURL_OPTS https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
     && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_$NODE_VERSION.x nodistro main" > /etc/apt/sources.list.d/nodesource.list \
     # Without a pin, apt takes whichever nodejs has the higher version string,
     # and Ubuntu's own comes without npm and npx. NodeSource's setup script
@@ -134,8 +134,7 @@ RUN apt-get update \
 # already proves it is the pinned version.
 ARG TYPST_VERSION=0.4.0
 ARG TYPST_SHA256=b547b09b5a1c8ffdf2dde8f77f7cf7eeb4da794932b9b8de78830615675ffa69
-RUN set -eux; \
-    curl $CURL_OPTS -o /tmp/typst.zip "https://github.com/carthage-software/ext-typst/releases/download/${TYPST_VERSION}/php_typst-${TYPST_VERSION}_php${PHP_VERSION}-x86_64-linux-glibc.zip"; \
+RUN curl $CURL_OPTS -o /tmp/typst.zip "https://github.com/carthage-software/ext-typst/releases/download/${TYPST_VERSION}/php_typst-${TYPST_VERSION}_php${PHP_VERSION}-x86_64-linux-glibc.zip"; \
     printf '%s  /tmp/typst.zip\n' "$TYPST_SHA256" | sha256sum -c -; \
     unzip -j /tmp/typst.zip '*.so' -d /tmp/typst; \
     install -m 644 /tmp/typst/typst.so "$(php -r 'echo ini_get("extension_dir");')/typst.so"; \
@@ -150,8 +149,7 @@ RUN set -eux; \
 # the installer's shell-profile edits.
 ARG PNPM_VERSION=12.22.0
 ARG PNPM_SHA256=07ee196f91af1e21edb0c794401f4152932c74b0dba5d415dc4dbd5783f3c7af
-RUN set -eux; \
-    curl $CURL_OPTS -o /tmp/pnpm.tar.gz "https://github.com/pnpm/pnpm/releases/download/v${PNPM_VERSION}/pnpm-linux-x64.tar.gz"; \
+RUN curl $CURL_OPTS -o /tmp/pnpm.tar.gz "https://github.com/pnpm/pnpm/releases/download/v${PNPM_VERSION}/pnpm-linux-x64.tar.gz"; \
     printf '%s  /tmp/pnpm.tar.gz\n' "$PNPM_SHA256" | sha256sum -c -; \
     mkdir /tmp/pnpm; \
     tar -xzf /tmp/pnpm.tar.gz -C /tmp/pnpm; \
@@ -162,8 +160,7 @@ RUN set -eux; \
 # code run as root, and installs whichever Composer is current on the day.
 ARG COMPOSER_VERSION=2.11.2
 ARG COMPOSER_SHA256=dd158c0afd41d15fac89e1b4e47b5d42911fe316c3687cd5edac98319b25d028
-RUN set -eux; \
-    curl $CURL_OPTS -o /usr/bin/composer "https://getcomposer.org/download/${COMPOSER_VERSION}/composer.phar"; \
+RUN curl $CURL_OPTS -o /usr/bin/composer "https://getcomposer.org/download/${COMPOSER_VERSION}/composer.phar"; \
     printf '%s  /usr/bin/composer\n' "$COMPOSER_SHA256" | sha256sum -c -; \
     chmod 755 /usr/bin/composer
 
@@ -185,8 +182,7 @@ RUN set -eux; \
 # after the branch has published.
 COPY checks/php-ci-check /usr/local/bin/php-ci-check
 
-RUN set -eux; \
-    phpdismod -v ${PHP_VERSION} -s ALL xdebug; \
+RUN phpdismod -v ${PHP_VERSION} -s ALL xdebug; \
     phpenmod -v ${PHP_VERSION} -s ALL pcov; \
     printf 'memory_limit = -1\nzend.assertions = 1\n' > /etc/php/${PHP_VERSION}/cli/conf.d/99-ci.ini; \
     php-ci-check base
@@ -203,8 +199,7 @@ WORKDIR /app
 # them together. The check encodes an H.264 video and extracts a thumbnail.
 FROM base AS ffmpeg
 
-RUN set -eux; \
-    apt-get update; \
+RUN apt-get update; \
     apt-get install -y --no-install-recommends ffmpeg; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*; \
@@ -217,8 +212,7 @@ RUN set -eux; \
 # proves FFI reaches libvips from the CLI and round-trips each format.
 FROM base AS vips
 
-RUN set -eux; \
-    apt-get update; \
+RUN apt-get update; \
     apt-get install -y --no-install-recommends \
         libvips42t64 \
         libvips-tools \
@@ -245,8 +239,7 @@ FROM base AS playwright
 # downloads comes from the project's own Playwright, not from this version.
 ARG PLAYWRIGHT_VERSION=1.65.1
 
-RUN set -eux; \
-    npx -y playwright@${PLAYWRIGHT_VERSION} install-deps chromium; \
+RUN npx -y playwright@${PLAYWRIGHT_VERSION} install-deps chromium; \
     apt-get -y autoremove; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/* /root/.npm /tmp/* /var/tmp/*; \
