@@ -16,7 +16,7 @@ developer runs. Dropped from it: supervisor and `start-container`, the
 build environment. Bitbucket overrides `ENTRYPOINT` anyway, so an image that
 configures itself there configures nothing.
 
-Added: `git config --global --add safe.directory '*'`, since Bitbucket clones
+Added: `git config --system --add safe.directory '*'`, since Bitbucket clones
 as root, and the two packages imagick needs and does not pull —
 `libmagickcore-7.q16-10-extra` and `ghostscript`, covered below. The
 ImageMagick soname is in the first package's name, so a base bump that moves it

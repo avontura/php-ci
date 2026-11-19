@@ -18,6 +18,14 @@ ARG NODE_VERSION=24
 ARG PNPM_VERSION=12.22.0
 ARG COMPOSER_VERSION=2.11.2
 
+# Typst and pnpm are fetched as x86_64 binaries, and Bitbucket runs amd64 only.
+# A plain `docker build .` on Apple Silicon builds arm64 and would otherwise fail
+# much later, on an ELF error from typst.so or an exec format error from pnpm.
+# dpkg rather than TARGETARCH: the legacy builder leaves TARGETARCH empty, and
+# dpkg answers for the image actually being built.
+RUN arch="$(dpkg --print-architecture)"; \
+    if [ "$arch" != amd64 ]; then echo "this image is amd64 only, not $arch: build with --platform linux/amd64"; exit 1; fi
+
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
 ENV LANG=C.UTF-8
@@ -58,7 +66,6 @@ RUN apt-get update \
     && mkdir -p /etc/apt/keyrings \
     && apt-get install -y --no-install-recommends \
         curl git gnupg unzip zip xz-utils \
-        libcap2-bin \
         sqlite3 \
     && curl -fsSL --retry 3 --retry-all-errors --connect-timeout 15 -o /tmp/debsuryorg-archive-keyring.deb https://packages.sury.org/debsuryorg-archive-keyring.deb \
     && dpkg -i /tmp/debsuryorg-archive-keyring.deb \
@@ -181,8 +188,10 @@ RUN set -eux; \
     for b in git composer node npm npx gs; do command -v "$b" >/dev/null; done
 
 # Bitbucket clones into the working directory as root; without this, git refuses
-# to read a repository it does not consider its own.
-RUN git config --global --add safe.directory '*'
+# to read a repository it does not consider its own. --system rather than
+# --global: /root/.gitconfig is only read while HOME=/root, and a step or runner
+# that sets another HOME would lose it.
+RUN git config --system --add safe.directory '*'
 
 WORKDIR /app
 
@@ -211,7 +220,9 @@ RUN set -eux; \
 # the reference tools. libheif needs a plugin per codec: libde265 and dav1d
 # decode HEIC and AVIF, x265 lets a suite write the HEIC it reads. The checks
 # prove FFI reaches libvips from the CLI (ffi.enable defaults to preload), and
-# that vipsheader still refuses JPEG XL with its untrusted loaders blocked.
+# that vipsheader reads JPEG XL but refuses it with its untrusted loaders
+# blocked. The read comes first: a refusal alone also passes when the loader is
+# missing altogether.
 FROM base AS vips
 
 RUN set -eux; \
@@ -234,6 +245,7 @@ RUN set -eux; \
     cjxl "$smoke_dir/image.png" "$smoke_dir/image.jxl" -p; \
     jxlinfo "$smoke_dir/image.jxl" | grep -q 'JPEG XL image, 160x90'; \
     djxl "$smoke_dir/image.jxl" "$smoke_dir/jxl.png"; \
+    vipsheader "$smoke_dir/image.jxl"; \
     if VIPS_BLOCK_UNTRUSTED=1 vipsheader "$smoke_dir/image.jxl"; then echo "vipsheader must refuse JPEG XL with untrusted loaders blocked"; exit 1; fi; \
     avifenc --progressive "$smoke_dir/image.png" "$smoke_dir/image.avif"; \
     test "$(VIPS_BLOCK_UNTRUSTED=1 vipsheader -f heif-compression "$smoke_dir/image.avif")" = "av1"; \

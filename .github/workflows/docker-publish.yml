@@ -212,6 +212,7 @@ jobs:
               cjxl "$smoke_dir/image.png" "$smoke_dir/image.jxl" -p
               jxlinfo "$smoke_dir/image.jxl" | grep -q "JPEG XL image, 160x90" || { echo "jxlinfo cannot read JPEG XL"; exit 1; }
               djxl "$smoke_dir/image.jxl" "$smoke_dir/jxl.png"
+              vipsheader "$smoke_dir/image.jxl" >/dev/null || { echo "vipsheader cannot read JPEG XL"; exit 1; }
               if VIPS_BLOCK_UNTRUSTED=1 vipsheader "$smoke_dir/image.jxl"; then echo "vipsheader must refuse JPEG XL with untrusted loaders blocked"; exit 1; fi
               avifenc --progressive "$smoke_dir/image.png" "$smoke_dir/image.avif"
               test "$(VIPS_BLOCK_UNTRUSTED=1 vipsheader -f heif-compression "$smoke_dir/image.avif")" = "av1"
