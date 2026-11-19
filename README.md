@@ -109,7 +109,8 @@ delegate — and the failure arrives only when something reads a PDF:
 | Coverage | **pcov enabled, xdebug installed but disabled** |
 | Assertions | `zend.assertions = 1`, as on a development machine — the distro's production ini compiles `assert()` out, which leaves the line uncovered |
 | Node | 24, with pnpm pinned to an exact 12.x (`PNPM_VERSION`) from its GitHub release — a native binary, so pnpm does not depend on the Node install. Dependabot does not track it: bump the version and its checksum together |
-| Also | composer, git, imagick with its SVG and PDF delegates, and the usual PHP extensions |
+| Composer | Pinned to an exact 2.x (`COMPOSER_VERSION`), checksum-verified. Like pnpm, Dependabot does not track it: bump the version and its checksum together |
+| Also | git, imagick with its SVG and PDF delegates, and the usual PHP extensions |
 | User | root, `COMPOSER_ALLOW_SUPERUSER=1` baked in |
 
 ## Why xdebug is off

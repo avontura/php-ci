@@ -192,7 +192,7 @@ jobs:
             php -r "exit(array_diff([\"SVG\", \"MSVG\", \"SVGZ\"], Imagick::queryFormats()) === [] ? 0 : 1);" || { echo "imagick cannot read SVG"; exit 1; }
             test "$(php -r "echo ini_get(\"zend.assertions\");")" = "1" || { echo "assertions are not compiled in"; exit 1; }
             test "$(pnpm -v)" = "$PNPM_VERSION" || { echo "pnpm is not $PNPM_VERSION: $(pnpm -v)"; exit 1; }
-            for b in git composer node gs; do
+            for b in git composer node npm npx gs; do
               command -v "$b" >/dev/null || { echo "$b missing"; exit 1; }
             done
             smoke_dir="$(mktemp -d)"

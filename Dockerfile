@@ -16,6 +16,7 @@ ARG PHP_VERSION=8.5
 ARG TYPST_VERSION=0.4.0
 ARG NODE_VERSION=24
 ARG PNPM_VERSION=12.22.0
+ARG COMPOSER_VERSION=2.11.2
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
@@ -38,7 +39,16 @@ RUN printf 'Acquire::Retries "3";\nAPT::Update::Error-Mode "any";\n' \
         > /etc/apt/apt.conf.d/99-vontura-strict
 
 # Bootstrap CA trust from the signed http metadata, then take the same archives
-# over HTTPS. Ubuntu's own hosts, not a third-party mirror: mirrors.edge.kernel.org
+# over HTTPS.
+#
+# Every download in this step goes to a file before anything reads it. /bin/sh
+# has no pipefail, so in `curl ... | gpg` or `curl ... | php` only the right-hand
+# side's exit status counts: a failed fetch becomes an empty keyring or an error
+# page run as PHP, and the build fails a step later, on NO_PUBKEY or a missing
+# composer, rather than here. pipefail for the whole file is not the fix: with
+# it, `php -m | grep -qx ...` fails whenever grep exits on its match while php
+# is still writing. -f makes an HTTP error a curl error; the retries match the
+# release downloads below. Ubuntu's own hosts, not a third-party mirror: mirrors.edge.kernel.org
 # timed out from the GitHub runners and took the ffmpeg variant down with it.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
@@ -50,7 +60,7 @@ RUN apt-get update \
         curl git gnupg unzip zip xz-utils \
         libcap2-bin \
         sqlite3 \
-    && curl -sSLo /tmp/debsuryorg-archive-keyring.deb https://packages.sury.org/debsuryorg-archive-keyring.deb \
+    && curl -fsSL --retry 3 --retry-all-errors --connect-timeout 15 -o /tmp/debsuryorg-archive-keyring.deb https://packages.sury.org/debsuryorg-archive-keyring.deb \
     && dpkg -i /tmp/debsuryorg-archive-keyring.deb \
     && echo "deb [signed-by=/usr/share/keyrings/debsuryorg-archive-keyring.gpg] https://packages.sury.org/php/ $(. /etc/os-release && echo $VERSION_CODENAME) main" > /etc/apt/sources.list.d/php.list \
     && printf 'Package: php*\nPin: origin packages.sury.org\nPin-Priority: 1001\n' > /etc/apt/preferences.d/sury \
@@ -91,9 +101,20 @@ RUN apt-get update \
         php${PHP_VERSION}-xdebug \
         php${PHP_VERSION}-xml \
         php${PHP_VERSION}-zip \
-    && curl -sLS https://getcomposer.org/installer | php -- --install-dir=/usr/bin/ --filename=composer \
-    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
+    # composer.phar itself rather than the installer, pinned like Typst and
+    # pnpm: the installer is unversioned code run as root, and installs
+    # whichever Composer is current on the day of the build.
+    # Checksum is for Composer 2.11.2; update it with the version.
+    && curl -fsSL --retry 3 --retry-all-errors --connect-timeout 15 -o /usr/bin/composer "https://getcomposer.org/download/${COMPOSER_VERSION}/composer.phar" \
+    && printf '%s  /usr/bin/composer\n' dd158c0afd41d15fac89e1b4e47b5d42911fe316c3687cd5edac98319b25d028 | sha256sum -c - \
+    && chmod 755 /usr/bin/composer \
+    && curl -fsSL --retry 3 --retry-all-errors --connect-timeout 15 -o /tmp/nodesource.key https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+    && gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg /tmp/nodesource.key \
     && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_$NODE_VERSION.x nodistro main" > /etc/apt/sources.list.d/nodesource.list \
+    # Without a pin, apt takes whichever nodejs has the higher version string,
+    # and Ubuntu's own comes without npm and npx. NodeSource's setup script
+    # writes the same preference.
+    && printf 'Package: nodejs\nPin: origin deb.nodesource.com\nPin-Priority: 600\n' > /etc/apt/preferences.d/nodesource \
     && apt-get update \
     && apt-get install -y --no-install-recommends nodejs \
     && apt-get -y autoremove \
@@ -156,7 +177,8 @@ RUN set -eux; \
     php -r 'exit(array_diff(["SVG", "MSVG", "SVGZ"], Imagick::queryFormats()) === [] ? 0 : 1);'; \
     test "$(php -r 'echo ini_get("zend.assertions");')" = "1"; \
     test "$(pnpm -v)" = "${PNPM_VERSION}"; \
-    for b in git composer node gs; do command -v "$b" >/dev/null; done
+    test "$(composer --version 2>/dev/null | cut -d" " -f3)" = "${COMPOSER_VERSION}"; \
+    for b in git composer node npm npx gs; do command -v "$b" >/dev/null; done
 
 # Bitbucket clones into the working directory as root; without this, git refuses
 # to read a repository it does not consider its own.
