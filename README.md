@@ -108,8 +108,8 @@ delegate — and the failure arrives only when something reads a PDF:
 | PHP | 8.5.x from `packages.sury.org`, pinned above the distro's own |
 | Coverage | **pcov enabled, xdebug installed but disabled** |
 | Assertions | `zend.assertions = 1`, as on a development machine — the distro's production ini compiles `assert()` out, which leaves the line uncovered |
-| Node | 24, with pnpm pinned to an exact 12.x (`PNPM_VERSION`) from its GitHub release — a native binary, so pnpm does not depend on the Node install. Dependabot does not track it: bump the version and its checksum together |
-| Composer | Pinned to an exact 2.x (`COMPOSER_VERSION`), checksum-verified. Like pnpm, Dependabot does not track it: bump the version and its checksum together |
+| Node | 24, with pnpm pinned to an exact 12.x (`PNPM_VERSION`) from its GitHub release — a native binary, so pnpm does not depend on the Node install. Dependabot does not track it: bump `PNPM_VERSION` and `PNPM_SHA256` together |
+| Composer | Pinned to an exact 2.x (`COMPOSER_VERSION`), checksum-verified. Like pnpm, Dependabot does not track it: bump `COMPOSER_VERSION` and `COMPOSER_SHA256` together |
 | Also | git, imagick with its SVG and PDF delegates, and the usual PHP extensions |
 | User | root, `COMPOSER_ALLOW_SUPERUSER=1` baked in |
 
