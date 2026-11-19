@@ -7,22 +7,28 @@ on:
   schedule:
     - cron: '15 5 * * *'
   push:
-    branches: [ "8.5" ]
+    branches: [ "main" ]
   pull_request:
-    branches: [ "8.5" ]
+    branches: [ "main" ]
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
   DOCKER_BUILD_RECORD_UPLOAD: 'false'
 
+# One branch builds every PHP version: the php matrix below is the list of
+# published versions, and each tag is named after its entry, not after the
+# branch. Adding a version is an entry in both matrices plus its typst-<version>
+# stage in the Dockerfile.
 jobs:
   base:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: [ "8.5" ]
     permissions:
       contents: read
-    outputs:
-      artifact-id: ${{ steps.upload.outputs.artifact-id }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -38,18 +44,20 @@ jobs:
           context: .
           target: base
           platforms: linux/amd64
+          build-args: PHP_VERSION=${{ matrix.php }}
           outputs: type=oci,dest=${{ runner.temp }}/base.tar
           provenance: false
           pull: true
           no-cache: ${{ github.event_name == 'schedule' }}
-          cache-from: type=gha,scope=buildkit
-          cache-to: type=gha,mode=max,scope=buildkit
+          cache-from: type=gha,scope=base-${{ matrix.php }}
+          cache-to: type=gha,mode=max,scope=base-${{ matrix.php }}
 
+      # Named per PHP version: a matrix job has one set of outputs, so the build
+      # jobs find their base by name rather than by an artifact ID output.
       - name: Upload shared base
-        id: upload
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: shared-base-${{ github.run_id }}-${{ github.run_attempt }}
+          name: shared-base-${{ matrix.php }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/base.tar
           if-no-files-found: error
           compression-level: 0
@@ -62,15 +70,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - target: thin
-            suffix: ''
-          - target: ffmpeg
-            suffix: '-ffmpeg'
-          - target: vips
-            suffix: '-vips'
-          - target: playwright
-            suffix: '-playwright'
+        php: [ "8.5" ]
+        target: [ thin, ffmpeg, vips, playwright ]
     permissions:
       contents: read
       packages: write
@@ -94,7 +95,7 @@ jobs:
       - name: Download shared base
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          artifact-ids: ${{ needs.base.outputs.artifact-id }}
+          name: shared-base-${{ matrix.php }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/shared-base
           merge-multiple: true
 
@@ -121,14 +122,18 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           flavor: |
             latest=false
-            suffix=${{ matrix.suffix }}
-          # Refresh the moving PHP tag on pushes AND schedules. SHA tags name
-          # source revisions; dated tags identify each variant's nightly build.
+            suffix=${{ matrix.target != 'thin' && format('-{0}', matrix.target) || '' }}
+          # Refresh the moving PHP tag (8.5, 8.5-ffmpeg) on pushes AND
+          # schedules. SHA tags name source revisions; dated tags identify each
+          # variant's nightly build. Every tag starts with the PHP version, so
+          # two versions built from one commit or on one night never share one.
+          # The prefixes are per tag: a tag's own prefix replaces the flavor's
+          # rather than adding to it, and type=sha always has one (sha-).
           tags: |
-            type=raw,value=${{ github.ref_name }},enable=${{ github.event_name != 'pull_request' }}
-            type=ref,event=pr
-            type=sha,format=long,enable=${{ github.event_name == 'push' }}
-            type=schedule,pattern={{date 'YYYYMMDD'}}
+            type=raw,value=${{ matrix.php }},enable=${{ github.event_name != 'pull_request' }}
+            type=ref,event=pr,prefix=${{ matrix.php }}-pr-
+            type=sha,format=long,prefix=${{ matrix.php }}-sha-,enable=${{ github.event_name == 'push' }}
+            type=schedule,pattern={{date 'YYYYMMDD'}},prefix=${{ matrix.php }}-
 
       # linux/amd64 only: Bitbucket Pipelines runs amd64, and an emulated arm64
       # leg would double the build for an architecture no pipeline pulls.
@@ -142,6 +147,7 @@ jobs:
         with:
           context: .
           target: ${{ matrix.target }}
+          build-args: PHP_VERSION=${{ matrix.php }}
           build-contexts: ${{ steps.base-context.outputs.context }}
           platforms: linux/amd64
           push: ${{ github.event_name != 'pull_request' }}
@@ -150,8 +156,8 @@ jobs:
           # The named context replaces the base stage; matrix jobs never
           # rebuild it. Refresh only the selected variant on nightly runs.
           no-cache-filters: ${{ github.event_name == 'schedule' && matrix.target || '' }}
-          cache-from: type=gha,scope=php-ci-${{ matrix.target }}
-          cache-to: type=gha,mode=max,scope=php-ci-${{ matrix.target }}
+          cache-from: type=gha,scope=php-ci-${{ matrix.php }}-${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=php-ci-${{ matrix.php }}-${{ matrix.target }}
 
       # Runs the image's own php-ci-check against the published digest, so it
       # tests what a pipeline will actually pull rather than what the builder
@@ -171,10 +177,11 @@ jobs:
         env:
           PLAYWRIGHT_VERSION: ${{ steps.pinned.outputs.playwright }}
           PNPM_VERSION: ${{ steps.pinned.outputs.pnpm }}
+          PHP_VERSION: ${{ matrix.php }}
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build-and-push.outputs.digest }}
           VARIANT: ${{ matrix.target }}
         run: |
-          docker run --rm -e PNPM_VERSION "$IMAGE" php-ci-check "$VARIANT"
+          docker run --rm -e PNPM_VERSION -e PHP_VERSION "$IMAGE" php-ci-check "$VARIANT"
           # The image carries no browser, so download one the way a pipeline
           # does and launch it. Only possible here: the build has no browser to
           # launch.

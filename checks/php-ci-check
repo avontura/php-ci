@@ -25,6 +25,12 @@ smoke_dir="$(mktemp -d)"
 trap 'rm -rf "$smoke_dir"' EXIT
 
 # Everything every variant inherits from base.
+# PHP_VERSION is in scope in the base build and passed by the publish workflow,
+# so a tag can never carry another PHP than its name says.
+if [ -n "${PHP_VERSION:-}" ]; then
+    php_true "PHP_MAJOR_VERSION . '.' . PHP_MINOR_VERSION === '$PHP_VERSION'" \
+        || fail "PHP is $(php -r 'echo PHP_VERSION;'), not $PHP_VERSION"
+fi
 php_true 'extension_loaded("typst")' || fail "typst is not loaded"
 php_true 'str_starts_with((new Typst\Compiler(new Typst\World()))->compileString("Hello from Typst")->toPdf()->bytes(), "%PDF-")' \
     || fail "typst cannot compile PDFs"
