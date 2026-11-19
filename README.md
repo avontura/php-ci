@@ -108,7 +108,7 @@ delegate — and the failure arrives only when something reads a PDF:
 | PHP | 8.5.x from `packages.sury.org`, pinned above the distro's own |
 | Coverage | **pcov enabled, xdebug installed but disabled** |
 | Assertions | `zend.assertions = 1`, as on a development machine — the distro's production ini compiles `assert()` out, which leaves the line uncovered |
-| Node | 24, with pnpm 12 from its own standalone installer — a native binary, so pnpm does not depend on the Node install |
+| Node | 24, with pnpm pinned to an exact 12.x (`PNPM_VERSION`) from its GitHub release — a native binary, so pnpm does not depend on the Node install. Dependabot does not track it: bump the version and its checksum together |
 | Also | composer, git, imagick with its SVG and PDF delegates, and the usual PHP extensions |
 | User | root, `COMPOSER_ALLOW_SUPERUSER=1` baked in |
 
@@ -191,6 +191,6 @@ the shared `base` stage; a default build installs neither FFmpeg, libvips nor Ch
 `--platform linux/amd64` matters on Apple Silicon: Bitbucket runs amd64, and the
 image is published for that architecture alone. The pinned Typst binary is
 amd64 too, so an arm64 build is not an equivalent check. On a Mac using Rosetta
-for amd64, the pnpm installer can fail with `tar: Cannot open: Function not
+for amd64, unpacking pnpm can fail with `tar: Cannot open: Function not
 implemented` — an emulation limit, not the recipe. Use
 `orb config set rosetta false` to build the published architecture.

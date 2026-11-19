@@ -165,19 +165,23 @@ jobs:
       # name carries the ImageMagick soname, so a base bump can drop them while
       # every other assertion still passes.
       # Read from the Dockerfile so the smoke test downloads the Chromium that
-      # install-deps was chosen for, with no second copy of the version to drift.
-      - name: Read pinned Playwright version
-        id: playwright
-        run: echo "version=$(sed -n 's/^ARG PLAYWRIGHT_VERSION=//p' Dockerfile)" >> "$GITHUB_OUTPUT"
+      # install-deps was chosen for, and expects the pnpm the build pinned, with
+      # no second copy of either version to drift.
+      - name: Read pinned versions
+        id: pinned
+        run: |
+          echo "playwright=$(sed -n 's/^ARG PLAYWRIGHT_VERSION=//p' Dockerfile)" >> "$GITHUB_OUTPUT"
+          echo "pnpm=$(sed -n 's/^ARG PNPM_VERSION=//p' Dockerfile)" >> "$GITHUB_OUTPUT"
 
       - name: Smoke test the published image
         if: ${{ github.event_name != 'pull_request' }}
         env:
-          PLAYWRIGHT_VERSION: ${{ steps.playwright.outputs.version }}
+          PLAYWRIGHT_VERSION: ${{ steps.pinned.outputs.playwright }}
+          PNPM_VERSION: ${{ steps.pinned.outputs.pnpm }}
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build-and-push.outputs.digest }}
           VARIANT: ${{ matrix.target }}
         run: |
-          docker run --rm -e VARIANT -e PLAYWRIGHT_VERSION "$IMAGE" bash -c '
+          docker run --rm -e VARIANT -e PLAYWRIGHT_VERSION -e PNPM_VERSION "$IMAGE" bash -c '
             set -eu
             php -v
             php -m | grep -qx typst || { echo "typst is not loaded"; exit 1; }
@@ -186,7 +190,7 @@ jobs:
             php -m | grep -qx xdebug && { echo "xdebug must not be loaded"; exit 1; }
             php -r "exit(array_diff([\"SVG\", \"MSVG\", \"SVGZ\"], Imagick::queryFormats()) === [] ? 0 : 1);" || { echo "imagick cannot read SVG"; exit 1; }
             test "$(php -r "echo ini_get(\"zend.assertions\");")" = "1" || { echo "assertions are not compiled in"; exit 1; }
-            test "$(pnpm -v | cut -d. -f1)" = "12" || { echo "pnpm is not 12: $(pnpm -v)"; exit 1; }
+            test "$(pnpm -v)" = "$PNPM_VERSION" || { echo "pnpm is not $PNPM_VERSION: $(pnpm -v)"; exit 1; }
             for b in git composer node gs; do
               command -v "$b" >/dev/null || { echo "$b missing"; exit 1; }
             done
