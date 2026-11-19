@@ -148,6 +148,14 @@ To add a version, for example 8.6:
 3. Add `"8.6"` to both `php` matrices in the workflow (the `base` and `build`
    jobs).
 
+Typst and every PHP extension are installed in `base`, which all four variants
+build on, so a version ships all four or none: until its extensions and Typst
+exist, there is no `8.6` and no `8.6-ffmpeg` either. Waiting is deliberate. A
+version published with fewer extensions would let `:8.6` quietly mean less than
+`:8.5`: without pcov there is no coverage and a coverage gate fails, and a
+project using imagick or redis breaks at runtime rather than at build time.
+`php-ci-check` enforces the full set for every version.
+
 Dropping a version is the reverse; its tags stay in the registry, unrefreshed.
 
 ## Tags
