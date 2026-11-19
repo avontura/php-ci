@@ -153,21 +153,13 @@ jobs:
           cache-from: type=gha,scope=php-ci-${{ matrix.target }}
           cache-to: type=gha,mode=max,scope=php-ci-${{ matrix.target }}
 
-      # The image exists to run a gate, so a base bump that breaks it breaks every
-      # pipeline at once. The pull request build is what catches that before the
-      # branch moves; this asserts the two things such a bump breaks silently -
-      # which coverage driver is loaded, and whether pnpm is the pinned binary
-      # or a corepack shim that fetches one at runtime.
-      # Runs against the published digest, so it tests what a pipeline will
-      # actually pull rather than what the builder believes it made. A pull
-      # request has nothing to pull; its equivalent ran inside the build.
-      #
-      # SVG is here for the same reason: the delegates come from a package whose
-      # name carries the ImageMagick soname, so a base bump can drop them while
-      # every other assertion still passes.
-      # Read from the Dockerfile so the smoke test downloads the Chromium that
-      # install-deps was chosen for, and expects the pnpm the build pinned, with
-      # no second copy of either version to drift.
+      # Runs the image's own php-ci-check against the published digest, so it
+      # tests what a pipeline will actually pull rather than what the builder
+      # believes it made. A pull request has nothing to pull; the same script
+      # ran at the end of each stage of its build.
+      # Read from the Dockerfile so the smoke test expects the pnpm the build
+      # pinned, and downloads the Chromium that install-deps was chosen for,
+      # with no second copy of either version to drift.
       - name: Read pinned versions
         id: pinned
         run: |
@@ -182,46 +174,15 @@ jobs:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build-and-push.outputs.digest }}
           VARIANT: ${{ matrix.target }}
         run: |
-          docker run --rm -e VARIANT -e PLAYWRIGHT_VERSION -e PNPM_VERSION "$IMAGE" bash -c '
-            set -eu
-            php -v
-            php -m | grep -qx typst || { echo "typst is not loaded"; exit 1; }
-            php -r "exit(str_starts_with((new Typst\\Compiler(new Typst\\World()))->compileString(\"Hello from Typst\")->toPdf()->bytes(), \"%PDF-\") ? 0 : 1);" || { echo "typst cannot compile PDFs"; exit 1; }
-            php -m | grep -qx pcov   || { echo "pcov is not loaded"; exit 1; }
-            php -m | grep -qx xdebug && { echo "xdebug must not be loaded"; exit 1; }
-            php -r "exit(array_diff([\"SVG\", \"MSVG\", \"SVGZ\"], Imagick::queryFormats()) === [] ? 0 : 1);" || { echo "imagick cannot read SVG"; exit 1; }
-            test "$(php -r "echo ini_get(\"zend.assertions\");")" = "1" || { echo "assertions are not compiled in"; exit 1; }
-            test "$(pnpm -v)" = "$PNPM_VERSION" || { echo "pnpm is not $PNPM_VERSION: $(pnpm -v)"; exit 1; }
-            for b in git composer node npm npx gs; do
-              command -v "$b" >/dev/null || { echo "$b missing"; exit 1; }
-            done
-            smoke_dir="$(mktemp -d)"
-            trap "rm -rf \"$smoke_dir\"" EXIT
-            if [ "$VARIANT" = "ffmpeg" ]; then
-              ffmpeg -hide_banner -loglevel error -f lavfi -i color=c=black:s=160x90:r=1 \
-                -t 1 -c:v libx264 -pix_fmt yuv420p "$smoke_dir/video.mp4"
-              test "$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,width,height \
-                -of csv=p=0 "$smoke_dir/video.mp4")" = "h264,160,90"
-              ffmpeg -hide_banner -loglevel error -i "$smoke_dir/video.mp4" \
-                -frames:v 1 -threads 1 "$smoke_dir/thumbnail.png"
-              test "$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,width,height \
-                -of csv=p=0 "$smoke_dir/thumbnail.png")" = "png,160,90"
-            elif [ "$VARIANT" = "vips" ]; then
-              php -r "\$vips = FFI::cdef(\"int vips_init(const char *argv0); const char *vips_version_string(void);\", \"libvips.so.42\"); exit(\$vips->vips_init(\"php\") === 0 ? 0 : 1);" || { echo "FFI cannot load libvips"; exit 1; }
-              vips black "$smoke_dir/image.png" 160 90 --bands 3
-              cjxl "$smoke_dir/image.png" "$smoke_dir/image.jxl" -p
-              jxlinfo "$smoke_dir/image.jxl" | grep -q "JPEG XL image, 160x90" || { echo "jxlinfo cannot read JPEG XL"; exit 1; }
-              djxl "$smoke_dir/image.jxl" "$smoke_dir/jxl.png"
-              vipsheader "$smoke_dir/image.jxl" >/dev/null || { echo "vipsheader cannot read JPEG XL"; exit 1; }
-              if VIPS_BLOCK_UNTRUSTED=1 vipsheader "$smoke_dir/image.jxl"; then echo "vipsheader must refuse JPEG XL with untrusted loaders blocked"; exit 1; fi
-              avifenc --progressive "$smoke_dir/image.png" "$smoke_dir/image.avif"
-              test "$(VIPS_BLOCK_UNTRUSTED=1 vipsheader -f heif-compression "$smoke_dir/image.avif")" = "av1"
-              vips heifsave "$smoke_dir/image.png" "$smoke_dir/image.heic" --compression hevc
-              test "$(VIPS_BLOCK_UNTRUSTED=1 vipsheader -f heif-compression "$smoke_dir/image.heic")" = "hevc"
-              vips copy "$smoke_dir/image.heic" "$smoke_dir/heic.png"
-            elif [ "$VARIANT" = "playwright" ]; then
-              # The image carries no browser, so download one the way a pipeline
-              # does and launch it. The version is the one the Dockerfile pins.
+          docker run --rm -e PNPM_VERSION "$IMAGE" php-ci-check "$VARIANT"
+          # The image carries no browser, so download one the way a pipeline
+          # does and launch it. Only possible here: the build has no browser to
+          # launch.
+          if [ "$VARIANT" = "playwright" ]; then
+            docker run --rm -e PLAYWRIGHT_VERSION "$IMAGE" bash -c '
+              set -eu
+              smoke_dir="$(mktemp -d)"
+              trap "rm -rf \"$smoke_dir\"" EXIT
               cd "$smoke_dir"
               export PLAYWRIGHT_BROWSERS_PATH="$smoke_dir/browsers"
               npx -y "playwright@$PLAYWRIGHT_VERSION" install chromium
@@ -229,13 +190,9 @@ jobs:
               test -n "$chrome" || { echo "playwright did not download chromium"; exit 1; }
               if ldd "$chrome" | grep "not found"; then echo "chromium has unresolved libraries"; exit 1; fi
               "$chrome" --headless --no-sandbox --disable-gpu --dump-dom about:blank | grep -q "<html" || { echo "chromium cannot launch headless"; exit 1; }
-            else
-              for binary in ffmpeg ffprobe vips vipsheader cjxl djxl jxlinfo avifenc; do
-                if command -v "$binary"; then echo "$binary must not be installed in the thin image"; exit 1; fi
-              done
-            fi
-            echo "smoke test ok"
-          '
+              echo "chromium ok"
+            '
+          fi
 
       - name: Sign the published Docker image
         if: ${{ github.event_name != 'pull_request' }}

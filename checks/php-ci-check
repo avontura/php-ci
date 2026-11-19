@@ -1,0 +1,104 @@
+#!/bin/sh
+# The image's invariants, kept in one place. The Dockerfile runs this at the end
+# of each stage, so a pull request that breaks one fails its build; the publish
+# workflow runs it again against the pushed digest, so what a pipeline pulls is
+# what was checked. Usage: php-ci-check base|thin|ffmpeg|vips|playwright
+#
+# POSIX sh, since that is what a RUN gets. Every check prints why it failed: a
+# bare non-zero exit from a smoke test reads the same as a broken runner.
+# `! cmd` would not do for a negative check: set -e ignores an inverted
+# command, so those are branches that call fail.
+set -eu
+
+variant="${1:?usage: php-ci-check base|thin|ffmpeg|vips|playwright}"
+
+fail() {
+    echo "php-ci-check $variant: $*" >&2
+    exit 1
+}
+
+php_true() {
+    php -r "exit(($1) ? 0 : 1);"
+}
+
+smoke_dir="$(mktemp -d)"
+trap 'rm -rf "$smoke_dir"' EXIT
+
+# Everything every variant inherits from base.
+php_true 'extension_loaded("typst")' || fail "typst is not loaded"
+php_true 'str_starts_with((new Typst\Compiler(new Typst\World()))->compileString("Hello from Typst")->toPdf()->bytes(), "%PDF-")' \
+    || fail "typst cannot compile PDFs"
+php_true 'extension_loaded("pcov")' || fail "pcov is not loaded"
+if php_true 'extension_loaded("xdebug")'; then fail "xdebug must not be loaded"; fi
+# The delegates come from a package whose name carries the ImageMagick soname,
+# so a base bump can drop them while every other check still passes.
+php_true 'array_diff(["SVG", "MSVG", "SVGZ"], Imagick::queryFormats()) === []' || fail "imagick cannot read SVG"
+php_true 'ini_get("zend.assertions") === "1"' || fail "assertions are not compiled in"
+# Proves PATH finds the pinned binary, not a corepack shim that fetches one.
+# PNPM_VERSION is in scope in the base build, where pnpm is installed, and the
+# publish workflow passes it for every variant. The variant builds do not touch
+# pnpm, and do not have the ARG.
+if [ -n "${PNPM_VERSION:-}" ]; then
+    [ "$(pnpm -v)" = "$PNPM_VERSION" ] || fail "pnpm is not $PNPM_VERSION: $(pnpm -v)"
+fi
+for b in git composer node npm npx gs; do
+    command -v "$b" >/dev/null || fail "$b is missing"
+done
+
+# The video and image tools belong to the ffmpeg and vips variants only. thin
+# is base and nothing else, so checking base is what keeps the default thin.
+no_media_tools() {
+    for b in ffmpeg ffprobe vips vipsheader cjxl djxl jxlinfo avifenc; do
+        if command -v "$b" >/dev/null; then fail "$b must not be installed"; fi
+    done
+}
+
+probe() {
+    ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,width,height -of csv=p=0 "$1"
+}
+
+case "$variant" in
+    base | thin)
+        no_media_tools
+        ;;
+    ffmpeg)
+        ffmpeg -hide_banner -loglevel error -f lavfi -i color=c=black:s=160x90:r=1 \
+            -t 1 -c:v libx264 -pix_fmt yuv420p "$smoke_dir/video.mp4" || fail "ffmpeg cannot encode H.264"
+        [ "$(probe "$smoke_dir/video.mp4")" = "h264,160,90" ] || fail "the H.264 video probes wrong"
+        ffmpeg -hide_banner -loglevel error -i "$smoke_dir/video.mp4" \
+            -frames:v 1 -threads 1 "$smoke_dir/thumbnail.png" || fail "ffmpeg cannot extract a thumbnail"
+        [ "$(probe "$smoke_dir/thumbnail.png")" = "png,160,90" ] || fail "the thumbnail probes wrong"
+        ;;
+    vips)
+        # ffi.enable defaults to preload, which still allows FFI on the CLI.
+        # shellcheck disable=SC2016 # $vips is PHP's, not the shell's
+        php_true '($vips = FFI::cdef("int vips_init(const char *argv0); const char *vips_version_string(void);", "libvips.so.42"))->vips_init("php") === 0 && str_starts_with($vips->vips_version_string(), "8.")' \
+            || fail "FFI cannot load libvips 8"
+        vips black "$smoke_dir/image.png" 160 90 --bands 3 || fail "vips cannot write PNG"
+        cjxl "$smoke_dir/image.png" "$smoke_dir/image.jxl" -p || fail "cjxl cannot encode JPEG XL"
+        jxlinfo "$smoke_dir/image.jxl" | grep -q 'JPEG XL image, 160x90' || fail "jxlinfo cannot read JPEG XL"
+        djxl "$smoke_dir/image.jxl" "$smoke_dir/jxl.png" || fail "djxl cannot decode JPEG XL"
+        # The read comes first: a refusal alone also passes when the loader is
+        # missing altogether.
+        vipsheader "$smoke_dir/image.jxl" >/dev/null || fail "vipsheader cannot read JPEG XL"
+        if VIPS_BLOCK_UNTRUSTED=1 vipsheader "$smoke_dir/image.jxl" >/dev/null 2>&1; then
+            fail "vipsheader must refuse JPEG XL with untrusted loaders blocked"
+        fi
+        avifenc --progressive "$smoke_dir/image.png" "$smoke_dir/image.avif" >/dev/null || fail "avifenc cannot encode AVIF"
+        [ "$(VIPS_BLOCK_UNTRUSTED=1 vipsheader -f heif-compression "$smoke_dir/image.avif")" = "av1" ] || fail "vips cannot read AVIF"
+        vips copy "$smoke_dir/image.avif" "$smoke_dir/avif.png" || fail "vips cannot decode AVIF"
+        vips heifsave "$smoke_dir/image.png" "$smoke_dir/image.heic" --compression hevc || fail "vips cannot write HEIC"
+        [ "$(VIPS_BLOCK_UNTRUSTED=1 vipsheader -f heif-compression "$smoke_dir/image.heic")" = "hevc" ] || fail "vips cannot read HEIC"
+        vips copy "$smoke_dir/image.heic" "$smoke_dir/heic.png" || fail "vips cannot decode HEIC"
+        ;;
+    playwright)
+        # The browser comes from the project's own Playwright at pipeline time;
+        # one baked in here would be the wrong version for most projects.
+        if [ -e /root/.cache/ms-playwright ]; then fail "no browser may be baked into the playwright image"; fi
+        ;;
+    *)
+        fail "unknown variant"
+        ;;
+esac
+
+echo "php-ci-check $variant: ok"

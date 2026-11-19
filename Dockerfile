@@ -178,29 +178,18 @@ RUN set -eux; \
 # debugger enables it deliberately and no other step pays for it - a loaded
 # Xdebug is what turned the type-coverage step into 273s and a corrupted heap.
 #
-# The checks that follow run in the same layer as the switch they verify, and
-# they write nothing, so the whole step costs no image size at all. They run
-# during the build, so a pull request that bumps the base image fails here
-# rather than after the branch has published. `! cmd` would not do: set -e is
-# ignored for an inverted command, so a negative assertion has to be a branch
-# that exits.
-#
-# The video and image tools belong to the ffmpeg and vips variants only. Checked
-# here rather than in the thin stage, which is base and nothing else: if base
-# ever gains them, every variant has, and this is the stage that caused it.
+# Every stage ends on checks/php-ci-check, which holds the image's invariants
+# in one place; the publish workflow runs the same script against the pushed
+# digest. A check writes nothing, so it costs no image size, and it runs during
+# the build, so a pull request that bumps the base image fails here rather than
+# after the branch has published.
+COPY checks/php-ci-check /usr/local/bin/php-ci-check
+
 RUN set -eux; \
     phpdismod -v ${PHP_VERSION} -s ALL xdebug; \
     phpenmod -v ${PHP_VERSION} -s ALL pcov; \
     printf 'memory_limit = -1\nzend.assertions = 1\n' > /etc/php/${PHP_VERSION}/cli/conf.d/99-ci.ini; \
-    php -m | grep -qx pcov; \
-    if php -m | grep -qx xdebug; then echo "xdebug must not be loaded"; exit 1; fi; \
-    php -r 'exit(array_diff(["SVG", "MSVG", "SVGZ"], Imagick::queryFormats()) === [] ? 0 : 1);'; \
-    test "$(php -r 'echo ini_get("zend.assertions");')" = "1"; \
-    test "$(pnpm -v)" = "${PNPM_VERSION}"; \
-    for b in git composer node npm npx gs; do command -v "$b" >/dev/null; done; \
-    for binary in ffmpeg ffprobe vips vipsheader cjxl djxl jxlinfo avifenc; do \
-        if command -v "$binary"; then echo "$binary must not be in the base image"; exit 1; fi; \
-    done
+    php-ci-check base
 
 # Bitbucket clones into the working directory as root; without this, git refuses
 # to read a repository it does not consider its own. --system rather than
@@ -211,7 +200,7 @@ RUN git config --system --add safe.directory '*'
 WORKDIR /app
 
 # Pest's video conversions need both binaries; Ubuntu's ffmpeg package supplies
-# them together. Keep package lists and smoke-test artifacts out of the layer.
+# them together. The check encodes an H.264 video and extracts a thumbnail.
 FROM base AS ffmpeg
 
 RUN set -eux; \
@@ -219,24 +208,13 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends ffmpeg; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*; \
-    smoke_dir="$(mktemp -d)"; \
-    trap 'rm -rf "$smoke_dir"' EXIT; \
-    probe() { ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,width,height -of csv=p=0 "$1"; }; \
-    ffmpeg -hide_banner -loglevel error -f lavfi -i color=c=black:s=160x90:r=1 \
-        -t 1 -c:v libx264 -pix_fmt yuv420p "$smoke_dir/video.mp4"; \
-    test "$(probe "$smoke_dir/video.mp4")" = "h264,160,90"; \
-    ffmpeg -hide_banner -loglevel error -i "$smoke_dir/video.mp4" \
-        -frames:v 1 -threads 1 "$smoke_dir/thumbnail.png"; \
-    test "$(probe "$smoke_dir/thumbnail.png")" = "png,160,90"
+    php-ci-check ffmpeg
 
 # Pest's image processing runs libvips in-process through FFI, inspects uploads
 # with vipsheader and jxlinfo, and reads and writes AVIF, HEIC and JPEG XL with
 # the reference tools. libheif needs a plugin per codec: libde265 and dav1d
-# decode HEIC and AVIF, x265 lets a suite write the HEIC it reads. The checks
-# prove FFI reaches libvips from the CLI (ffi.enable defaults to preload), and
-# that vipsheader reads JPEG XL but refuses it with its untrusted loaders
-# blocked. The read comes first: a refusal alone also passes when the loader is
-# missing altogether.
+# decode HEIC and AVIF, x265 lets a suite write the HEIC it reads. The check
+# proves FFI reaches libvips from the CLI and round-trips each format.
 FROM base AS vips
 
 RUN set -eux; \
@@ -251,22 +229,7 @@ RUN set -eux; \
         libheif-plugin-x265; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*; \
-    php -m | grep -qx FFI; \
-    php -r '$vips = FFI::cdef("int vips_init(const char *argv0); const char *vips_version_string(void);", "libvips.so.42"); exit($vips->vips_init("php") === 0 && str_starts_with($vips->vips_version_string(), "8.") ? 0 : 1);'; \
-    smoke_dir="$(mktemp -d)"; \
-    trap 'rm -rf "$smoke_dir"' EXIT; \
-    vips black "$smoke_dir/image.png" 160 90 --bands 3; \
-    cjxl "$smoke_dir/image.png" "$smoke_dir/image.jxl" -p; \
-    jxlinfo "$smoke_dir/image.jxl" | grep -q 'JPEG XL image, 160x90'; \
-    djxl "$smoke_dir/image.jxl" "$smoke_dir/jxl.png"; \
-    vipsheader "$smoke_dir/image.jxl"; \
-    if VIPS_BLOCK_UNTRUSTED=1 vipsheader "$smoke_dir/image.jxl"; then echo "vipsheader must refuse JPEG XL with untrusted loaders blocked"; exit 1; fi; \
-    avifenc --progressive "$smoke_dir/image.png" "$smoke_dir/image.avif"; \
-    test "$(VIPS_BLOCK_UNTRUSTED=1 vipsheader -f heif-compression "$smoke_dir/image.avif")" = "av1"; \
-    vips copy "$smoke_dir/image.avif" "$smoke_dir/avif.png"; \
-    vips heifsave "$smoke_dir/image.png" "$smoke_dir/image.heic" --compression hevc; \
-    test "$(VIPS_BLOCK_UNTRUSTED=1 vipsheader -f heif-compression "$smoke_dir/image.heic")" = "hevc"; \
-    vips copy "$smoke_dir/image.heic" "$smoke_dir/heic.png"
+    php-ci-check vips
 
 # Pest's browser tests drive Chromium through Playwright. The image carries only
 # the OS libraries Chromium links against, not a browser: the pipeline step runs
@@ -287,8 +250,8 @@ RUN set -eux; \
     apt-get -y autoremove; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/* /root/.npm /tmp/* /var/tmp/*; \
-    if [ -e /root/.cache/ms-playwright ]; then echo "no browser may be baked into the playwright image"; exit 1; fi
+    php-ci-check playwright
 
 # The last stage is the default for a plain `docker build`; it must stay thin,
-# which base's checks already guarantee.
+# which `php-ci-check base` already guarantees.
 FROM base AS thin
