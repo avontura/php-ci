@@ -163,13 +163,16 @@ and avoids installing the shared toolchain more than once.
 Dependabot raises the base-image and action bumps that change a file; apt-level
 patches change no source file.
 
-Build-time checks and published-digest smoke tests preserve the shared PHP,
-Typst, coverage-driver, assertions, ImageMagick and toolchain invariants. They
-also check that the thin image has neither video binary and that the FFmpeg
-variant can generate an H.264 video, probe its codec and dimensions, extract a
-PNG thumbnail and probe that thumbnail. Temporary media is removed. The
-Playwright variant's smoke test downloads Chromium the way a pipeline does,
-checks it for unresolved libraries and launches it headless.
+The image's invariants live in one script, [`checks/php-ci-check`](checks/php-ci-check),
+installed in the image as `php-ci-check`. Every stage of the build ends on it, and
+the publish workflow runs it again against the pushed digest. It checks the
+shared PHP, Typst, coverage-driver, assertions, ImageMagick and toolchain
+invariants, that the thin image has no video or image tools, that the FFmpeg
+variant can encode an H.264 video and extract a PNG thumbnail, and that the vips
+variant reaches libvips through FFI and round-trips JPEG XL, AVIF and HEIC.
+Temporary media is removed. Only the Playwright variant's browser check stays in
+the workflow: it downloads Chromium the way a pipeline does, checks it for
+unresolved libraries and launches it headless.
 
 Every successfully smoke-tested published digest is signed with
 [cosign](https://github.com/sigstore/cosign):
