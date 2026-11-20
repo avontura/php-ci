@@ -22,13 +22,14 @@ as root, and the two packages imagick needs and does not pull —
 ImageMagick soname is in the first package's name, so a base bump that moves it
 fails this build rather than a project's.
 
-The shared Dockerfile publishes four variants:
+The shared Dockerfile publishes five variants:
 
 | Tag | Build target | Use |
 |---|---|---|
 | `8.5` | `thin` (default) | Global pipeline image: dependency installation, formatting, static analysis, type coverage and frontend builds |
 | `8.5-ffmpeg` | `ffmpeg` | Pest steps only; adds Ubuntu's `ffmpeg` package, including `ffprobe`, with `--no-install-recommends` |
 | `8.5-vips` | `vips` | Pest steps only; adds libvips for FFI (`jcupitt/vips`) with `libvips-tools`, `libjxl-tools`, `libavif-bin` and the libheif plugins that read HEIC and AVIF and write HEIC |
+| `8.5-vips-hunspell` | `vips-hunspell` | Pest steps only; `8.5-vips` plus `hunspell` and OpenTaal's Dutch dictionary (`hunspell-nl`, `-d nl_NL`), for a project that also asks Hunspell for the base forms of Dutch words |
 | `8.5-playwright` | `playwright` | Browser-test step only; carries Chromium's OS libraries, the step downloads the browser with `pnpm exec playwright install chromium` |
 
 Keep the global image thin and override the image on the Pest step:
@@ -41,7 +42,8 @@ Keep the global image thin and override the image on the Pest step:
           - composer run test:pest
 
 `8.5-vips` is overridden the same way, for a project that processes images
-with libvips. These are the explicit Pest-only exceptions to using one global
+with libvips, and `8.5-vips-hunspell` for one that also stems Dutch words with
+Hunspell. These are the explicit Pest-only exceptions to using one global
 pipeline image. Do not install FFmpeg, libvips or its tools at runtime in
 consumer pipelines. FFI itself is in the base: PHP's default
 `ffi.enable=preload` allows it on the CLI, so `composer install` of
@@ -130,11 +132,11 @@ wants a debugger turns it on deliberately:
 `main` builds every published PHP version from the same Dockerfile. The `php`
 matrix in `.github/workflows/docker-publish.yml` is the list of versions; each
 build passes its entry as `PHP_VERSION`, and its tags are named after the entry,
-so `8.5` publishes `:8.5`, `:8.5-ffmpeg`, `:8.5-vips` and `:8.5-playwright`. A
+so `8.5` publishes `:8.5`, `:8.5-ffmpeg`, `:8.5-vips`, `:8.5-vips-hunspell` and `:8.5-playwright`. A
 fix applies to every version at once, with nothing to cherry-pick.
 
 Per PHP version, a prerequisite job builds the shared `base` once, then a matrix
-builds `thin`, `ffmpeg`, `vips` and `playwright` independently. Each variant has its own
+builds `thin`, `ffmpeg`, `vips`, `vips-hunspell` and `playwright` independently. Each variant has its own
 smoke test, publication and signing, and `php-ci-check` fails a build whose PHP
 is not the version its tags name.
 
@@ -148,8 +150,8 @@ To add a version, for example 8.6:
 3. Add `"8.6"` to both `php` matrices in the workflow (the `base` and `build`
    jobs).
 
-Typst and every PHP extension are installed in `base`, which all four variants
-build on, so a version ships all four or none: until its extensions and Typst
+Typst and every PHP extension are installed in `base`, which all five variants
+build on, so a version ships all five or none: until its extensions and Typst
 exist, there is no `8.6` and no `8.6-ffmpeg` either. Waiting is deliberate. A
 version published with fewer extensions would let `:8.6` quietly mean less than
 `:8.5`: without pcov there is no coverage and a coverage gate fails, and a
@@ -161,18 +163,18 @@ Dropping a version is the reverse; its tags stay in the registry, unrefreshed.
 
 ## Tags
 
-| Thin | FFmpeg | libvips | Playwright | Meaning |
-|---|---|---|---|---|
-| `8.5` | `8.5-ffmpeg` | `8.5-vips` | `8.5-playwright` | Moving PHP version tags, refreshed on pushes and nightly schedules |
-| `8.5-sha-<full sha>` | `8.5-sha-<full sha>-ffmpeg` | `8.5-sha-<full sha>-vips` | `8.5-sha-<full sha>-playwright` | Source revision tags published on pushes |
-| `8.5-YYYYMMDD` | `8.5-YYYYMMDD-ffmpeg` | `8.5-YYYYMMDD-vips` | `8.5-YYYYMMDD-playwright` | Nightly builds, dated in UTC |
+| Thin | FFmpeg | libvips | libvips + Hunspell | Playwright | Meaning |
+|---|---|---|---|---|---|
+| `8.5` | `8.5-ffmpeg` | `8.5-vips` | `8.5-vips-hunspell` | `8.5-playwright` | Moving PHP version tags, refreshed on pushes and nightly schedules |
+| `8.5-sha-<full sha>` | `8.5-sha-<full sha>-ffmpeg` | `8.5-sha-<full sha>-vips` | `8.5-sha-<full sha>-vips-hunspell` | `8.5-sha-<full sha>-playwright` | Source revision tags published on pushes |
+| `8.5-YYYYMMDD` | `8.5-YYYYMMDD-ffmpeg` | `8.5-YYYYMMDD-vips` | `8.5-YYYYMMDD-vips-hunspell` | `8.5-YYYYMMDD-playwright` | Nightly builds, dated in UTC |
 
 Every tag starts with its PHP version, so versions built from one commit or on
 one night never share a tag. Revision and nightly tags published before the
 version matrix have no PHP prefix (`sha-<full sha>`, `YYYYMMDD`); they are 8.5
 builds and stay in the registry.
 
-Pull requests build all four targets for every version without publishing;
+Pull requests build all five targets for every version without publishing;
 their metadata uses `8.5-pr-<number>`, `8.5-pr-<number>-ffmpeg` and so on. Base
 and variant cache scopes are separate per PHP version.
 
@@ -200,7 +202,9 @@ the publish workflow runs it again against the pushed digest. It checks the
 shared PHP, Typst, coverage-driver, assertions, ImageMagick and toolchain
 invariants, that the thin image has no video or image tools, that the FFmpeg
 variant can encode an H.264 video and extract a PNG thumbnail, and that the vips
-variant reaches libvips through FFI and round-trips JPEG XL, AVIF and HEIC.
+variant reaches libvips through FFI and round-trips JPEG XL, AVIF and HEIC, and
+that the vips-hunspell variant does all that and stems a Dutch plural. Only
+that variant may carry hunspell.
 Temporary media is removed. Only the Playwright variant's browser check stays in
 the workflow: it downloads Chromium the way a pipeline does, checks it for
 unresolved libraries and launches it headless.
@@ -222,6 +226,7 @@ another version from the matrix takes `--build-arg PHP_VERSION=<version>`.
     docker build --platform linux/amd64 --target thin -t php-ci:8.5 .
     docker build --platform linux/amd64 --target ffmpeg -t php-ci:8.5-ffmpeg .
     docker build --platform linux/amd64 --target vips -t php-ci:8.5-vips .
+    docker build --platform linux/amd64 --target vips-hunspell -t php-ci:8.5-vips-hunspell .
     docker build --platform linux/amd64 --target playwright -t php-ci:8.5-playwright .
 
 The first two commands produce the same thin image. Every final target inherits

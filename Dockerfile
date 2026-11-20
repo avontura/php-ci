@@ -260,6 +260,18 @@ RUN apt-get update; \
     rm -rf /var/lib/apt/lists/*; \
     php-ci-check vips
 
+# The vips variant plus hunspell with OpenTaal's Dutch dictionary, for a Pest
+# step that both processes images and stems Dutch words (`hunspell -d nl_NL
+# -s`). On top of vips rather than beside it, so one step has both. The check
+# runs the vips checks and stems a Dutch plural.
+FROM vips AS vips-hunspell
+
+RUN apt-get update; \
+    apt-get install -y --no-install-recommends hunspell hunspell-nl; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*; \
+    php-ci-check vips-hunspell
+
 # Pest's browser tests drive Chromium through Playwright. The image carries only
 # the OS libraries Chromium links against, not a browser: the pipeline step runs
 # `pnpm exec playwright install chromium` (no --with-deps), so the browser always

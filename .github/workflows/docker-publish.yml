@@ -71,7 +71,7 @@ jobs:
       fail-fast: false
       matrix:
         php: [ "8.5" ]
-        target: [ thin, ffmpeg, vips, playwright ]
+        target: [ thin, ffmpeg, vips, vips-hunspell, playwright ]
     permissions:
       contents: read
       packages: write
@@ -154,8 +154,10 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # The named context replaces the base stage; matrix jobs never
-          # rebuild it. Refresh only the selected variant on nightly runs.
-          no-cache-filters: ${{ github.event_name == 'schedule' && matrix.target || '' }}
+          # rebuild it. Refresh only the selected variant on nightly runs, and
+          # for vips-hunspell the vips stage it builds on as well, or its
+          # libvips packages would stay at whatever the cache last held.
+          no-cache-filters: ${{ github.event_name == 'schedule' && (matrix.target == 'vips-hunspell' && 'vips,vips-hunspell' || matrix.target) || '' }}
           cache-from: type=gha,scope=php-ci-${{ matrix.php }}-${{ matrix.target }}
           cache-to: type=gha,mode=max,scope=php-ci-${{ matrix.php }}-${{ matrix.target }}
 

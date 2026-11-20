@@ -2,7 +2,7 @@
 # The image's invariants, kept in one place. The Dockerfile runs this at the end
 # of each stage, so a pull request that breaks one fails its build; the publish
 # workflow runs it again against the pushed digest, so what a pipeline pulls is
-# what was checked. Usage: php-ci-check base|thin|ffmpeg|vips|playwright
+# what was checked. Usage: php-ci-check base|thin|ffmpeg|vips|vips-hunspell|playwright
 #
 # POSIX sh, since that is what a RUN gets. Every check prints why it failed: a
 # bare non-zero exit from a smoke test reads the same as a broken runner.
@@ -10,7 +10,7 @@
 # command, so those are branches that call fail.
 set -eu
 
-variant="${1:?usage: php-ci-check base|thin|ffmpeg|vips|playwright}"
+variant="${1:?usage: php-ci-check base|thin|ffmpeg|vips|vips-hunspell|playwright}"
 
 fail() {
     echo "php-ci-check $variant: $*" >&2
@@ -59,6 +59,35 @@ no_media_tools() {
     done
 }
 
+# Both vips variants carry the same libvips stack.
+check_vips() {
+    # ffi.enable defaults to preload, which still allows FFI on the CLI.
+    # shellcheck disable=SC2016 # $vips is PHP's, not the shell's
+    php_true '($vips = FFI::cdef("int vips_init(const char *argv0); const char *vips_version_string(void);", "libvips.so.42"))->vips_init("php") === 0 && str_starts_with($vips->vips_version_string(), "8.")' \
+        || fail "FFI cannot load libvips 8"
+    vips black "$smoke_dir/image.png" 160 90 --bands 3 || fail "vips cannot write PNG"
+    cjxl "$smoke_dir/image.png" "$smoke_dir/image.jxl" -p || fail "cjxl cannot encode JPEG XL"
+    jxlinfo "$smoke_dir/image.jxl" | grep -q 'JPEG XL image, 160x90' || fail "jxlinfo cannot read JPEG XL"
+    djxl "$smoke_dir/image.jxl" "$smoke_dir/jxl.png" || fail "djxl cannot decode JPEG XL"
+    # The read comes first: a refusal alone also passes when the loader is
+    # missing altogether.
+    vipsheader "$smoke_dir/image.jxl" >/dev/null || fail "vipsheader cannot read JPEG XL"
+    if VIPS_BLOCK_UNTRUSTED=1 vipsheader "$smoke_dir/image.jxl" >/dev/null 2>&1; then
+        fail "vipsheader must refuse JPEG XL with untrusted loaders blocked"
+    fi
+    avifenc --progressive "$smoke_dir/image.png" "$smoke_dir/image.avif" >/dev/null || fail "avifenc cannot encode AVIF"
+    [ "$(VIPS_BLOCK_UNTRUSTED=1 vipsheader -f heif-compression "$smoke_dir/image.avif")" = "av1" ] || fail "vips cannot read AVIF"
+    vips copy "$smoke_dir/image.avif" "$smoke_dir/avif.png" || fail "vips cannot decode AVIF"
+    vips heifsave "$smoke_dir/image.png" "$smoke_dir/image.heic" --compression hevc || fail "vips cannot write HEIC"
+    [ "$(VIPS_BLOCK_UNTRUSTED=1 vipsheader -f heif-compression "$smoke_dir/image.heic")" = "hevc" ] || fail "vips cannot read HEIC"
+    vips copy "$smoke_dir/image.heic" "$smoke_dir/heic.png" || fail "vips cannot decode HEIC"
+}
+
+# Hunspell belongs to the vips-hunspell variant only.
+no_hunspell() {
+    if command -v hunspell >/dev/null; then fail "hunspell must not be installed"; fi
+}
+
 probe() {
     ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,width,height -of csv=p=0 "$1"
 }
@@ -66,6 +95,7 @@ probe() {
 case "$variant" in
     base | thin)
         no_media_tools
+        no_hunspell
         ;;
     ffmpeg)
         ffmpeg -hide_banner -loglevel error -f lavfi -i color=c=black:s=160x90:r=1 \
@@ -76,26 +106,16 @@ case "$variant" in
         [ "$(probe "$smoke_dir/thumbnail.png")" = "png,160,90" ] || fail "the thumbnail probes wrong"
         ;;
     vips)
-        # ffi.enable defaults to preload, which still allows FFI on the CLI.
-        # shellcheck disable=SC2016 # $vips is PHP's, not the shell's
-        php_true '($vips = FFI::cdef("int vips_init(const char *argv0); const char *vips_version_string(void);", "libvips.so.42"))->vips_init("php") === 0 && str_starts_with($vips->vips_version_string(), "8.")' \
-            || fail "FFI cannot load libvips 8"
-        vips black "$smoke_dir/image.png" 160 90 --bands 3 || fail "vips cannot write PNG"
-        cjxl "$smoke_dir/image.png" "$smoke_dir/image.jxl" -p || fail "cjxl cannot encode JPEG XL"
-        jxlinfo "$smoke_dir/image.jxl" | grep -q 'JPEG XL image, 160x90' || fail "jxlinfo cannot read JPEG XL"
-        djxl "$smoke_dir/image.jxl" "$smoke_dir/jxl.png" || fail "djxl cannot decode JPEG XL"
-        # The read comes first: a refusal alone also passes when the loader is
-        # missing altogether.
-        vipsheader "$smoke_dir/image.jxl" >/dev/null || fail "vipsheader cannot read JPEG XL"
-        if VIPS_BLOCK_UNTRUSTED=1 vipsheader "$smoke_dir/image.jxl" >/dev/null 2>&1; then
-            fail "vipsheader must refuse JPEG XL with untrusted loaders blocked"
-        fi
-        avifenc --progressive "$smoke_dir/image.png" "$smoke_dir/image.avif" >/dev/null || fail "avifenc cannot encode AVIF"
-        [ "$(VIPS_BLOCK_UNTRUSTED=1 vipsheader -f heif-compression "$smoke_dir/image.avif")" = "av1" ] || fail "vips cannot read AVIF"
-        vips copy "$smoke_dir/image.avif" "$smoke_dir/avif.png" || fail "vips cannot decode AVIF"
-        vips heifsave "$smoke_dir/image.png" "$smoke_dir/image.heic" --compression hevc || fail "vips cannot write HEIC"
-        [ "$(VIPS_BLOCK_UNTRUSTED=1 vipsheader -f heif-compression "$smoke_dir/image.heic")" = "hevc" ] || fail "vips cannot read HEIC"
-        vips copy "$smoke_dir/image.heic" "$smoke_dir/heic.png" || fail "vips cannot decode HEIC"
+        no_hunspell
+        check_vips
+        ;;
+    vips-hunspell)
+        check_vips
+        # The Dutch dictionary is a package of its own, so hunspell can be
+        # present while it is missing; stemming a plural proves both are there
+        # and read each other.
+        [ "$(echo fietsen | hunspell -d nl_NL -s -i UTF-8 | grep -c '^fietsen fiets$')" = 1 ] \
+            || fail "hunspell cannot stem Dutch with nl_NL"
         ;;
     playwright)
         # The browser comes from the project's own Playwright at pipeline time;
