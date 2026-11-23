@@ -147,6 +147,7 @@ To add a version, for example 8.6:
    follow a PHP release by a few weeks.
 2. Check that ext-typst publishes a `php8.6-x86_64-linux-glibc` archive, and add
    a `typst-8.6` stage with its checksum next to `typst-8.5` in the Dockerfile.
+   (For 8.6 this stage already exists, added with ext-typst 0.5.0.)
 3. Add `"8.6"` to both `php` matrices in the workflow (the `base` and `build`
    jobs).
 
