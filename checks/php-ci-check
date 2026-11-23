@@ -98,6 +98,7 @@ case "$variant" in
         no_hunspell
         ;;
     ffmpeg)
+        no_hunspell
         ffmpeg -hide_banner -loglevel error -f lavfi -i color=c=black:s=160x90:r=1 \
             -t 1 -c:v libx264 -pix_fmt yuv420p "$smoke_dir/video.mp4" || fail "ffmpeg cannot encode H.264"
         [ "$(probe "$smoke_dir/video.mp4")" = "h264,160,90" ] || fail "the H.264 video probes wrong"
@@ -118,6 +119,7 @@ case "$variant" in
             || fail "hunspell cannot stem Dutch with nl_NL"
         ;;
     playwright)
+        no_hunspell
         # The browser comes from the project's own Playwright at pipeline time;
         # one baked in here would be the wrong version for most projects.
         if [ -e /root/.cache/ms-playwright ]; then fail "no browser may be baked into the playwright image"; fi
