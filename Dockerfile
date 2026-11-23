@@ -24,7 +24,7 @@ ARG PHP_VERSION=8.5
 # together. Dependabot tracks none of them. Declared before the first FROM,
 # since the download stages below need them too; a stage only sees the ones it
 # declares again.
-ARG TYPST_VERSION=0.4.0
+ARG TYPST_VERSION=0.5.0
 ARG PNPM_VERSION=12.22.0
 ARG PNPM_SHA256=07ee196f91af1e21edb0c794401f4152932c74b0dba5d415dc4dbd5783f3c7af
 ARG COMPOSER_VERSION=2.11.2
@@ -41,7 +41,7 @@ ARG COMPOSER_SHA256=dd158c0afd41d15fac89e1b4e47b5d42911fe316c3687cd5edac98319b25
 # version before this image can.
 FROM scratch AS typst-8.5
 ARG TYPST_VERSION
-ADD --checksum=sha256:b547b09b5a1c8ffdf2dde8f77f7cf7eeb4da794932b9b8de78830615675ffa69 \
+ADD --checksum=sha256:137e541d5751576c9cb9f7c72203dec316b7039533ca6b86dbaa9cd0759cea13 \
     https://github.com/carthage-software/ext-typst/releases/download/${TYPST_VERSION}/php_typst-${TYPST_VERSION}_php8.5-x86_64-linux-glibc.zip \
     /typst.zip
 
