@@ -184,6 +184,8 @@ and supplies its manifest digest as a
 named `base` build context, replacing the Dockerfile's base stage rather than
 rebuilding it. This also works on fork pull requests without registry write
 access. The artifact expires after one day; only the final variants are published.
+A run that succeeds deletes it at once; a failed run keeps it, so "Re-run failed
+jobs" rebuilds only the failed variants, from the same base, within that day.
 For strictly reproducible pulls, pin a digest: rebuilding the same source
 revision can resolve newer apt packages, so a SHA tag is not an immutable
 package snapshot.

@@ -11,6 +11,9 @@ permissions:
 
 jobs:
   cleanup:
+    # A failed run keeps its base, so "Re-run failed jobs" can still build the
+    # variants from it; the one-day retention removes it if nobody does.
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
