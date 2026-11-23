@@ -45,12 +45,6 @@ ADD --checksum=sha256:137e541d5751576c9cb9f7c72203dec316b7039533ca6b86dbaa9cd075
     https://github.com/carthage-software/ext-typst/releases/download/${TYPST_VERSION}/php_typst-${TYPST_VERSION}_php8.5-x86_64-linux-glibc.zip \
     /typst.zip
 
-FROM scratch AS typst-8.6
-ARG TYPST_VERSION
-ADD --checksum=sha256:1cf2943bd370c1b6c640ccb59efbd6e9f68c48acc9b44ea5afe5ffa73780f5c6 \
-    https://github.com/carthage-software/ext-typst/releases/download/${TYPST_VERSION}/php_typst-${TYPST_VERSION}_php8.6-x86_64-linux-glibc.zip \
-    /typst.zip
-
 FROM typst-${PHP_VERSION} AS typst-download
 
 FROM scratch AS pnpm-download
